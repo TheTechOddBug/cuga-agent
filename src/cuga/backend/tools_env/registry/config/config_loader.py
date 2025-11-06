@@ -6,8 +6,36 @@ from cuga.backend.utils.file_utils import read_yaml_file
 
 
 class Auth(BaseModel):
+    """
+    Authentication configuration supporting multiple auth types.
+
+    Supported types:
+    - 'header': Custom header authentication (e.g., X-API-Key)
+    - 'bearer': Bearer token authentication (Authorization: Bearer <token>)
+    - 'api-key': API key in query parameter
+    - 'basic': Basic authentication (Authorization: Basic <base64>)
+    - 'query': Custom query parameter authentication
+
+    Examples:
+        # Header auth
+        Auth(type='header', value='my-api-key', key='X-API-Key')
+
+        # Bearer token
+        Auth(type='bearer', value='my-token')
+
+        # API key in query
+        Auth(type='api-key', value='my-key', key='api_key')
+
+        # Basic auth
+        Auth(type='basic', value='username:password')
+
+        # Custom query param
+        Auth(type='query', value='my-value', key='auth_token')
+    """
+
     type: str
     value: Optional[str] = None
+    key: Optional[str] = None  # Header name or query param name
 
 
 class ApiOverride(BaseModel):
@@ -100,7 +128,7 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
     auth_cfg = config.get('auth')
     auth = None
     if auth_cfg:
-        auth = Auth(type=auth_cfg['type'], value=auth_cfg.get('value'))
+        auth = Auth(type=auth_cfg['type'], value=auth_cfg.get('value'), key=auth_cfg.get('key'))
 
     # Auto-detect service type if not explicitly specified
     service_type = config.get('type')

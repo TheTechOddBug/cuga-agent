@@ -31,3 +31,12 @@ repos:
         name: conventional commits
         stages: [commit-msg]
         args: []
+
+  # Detect secrets - prevent committing sensitive information
+  - repo: https://github.com/ibm/detect-secrets
+    rev: 0.13.1+ibm.64.dss
+    hooks:
+      - id: detect-secrets
+        name: detect secrets
+        args: ['--baseline', '.secrets.baseline']
+        exclude: package.lock.json
