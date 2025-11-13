@@ -269,6 +269,7 @@ class CugaAgent:
         state_messages: Optional[List] = None,
         chat_messages: Optional[List[BaseMessage]] = None,
         initial_context: Optional[Dict[str, Any]] = None,
+        keep_last_n_vars: int = 4,
     ) -> Tuple[str, Dict[str, Any], Optional[List]]:
         """
         Execute a task using the CodeAct agent.
@@ -280,6 +281,7 @@ class CugaAgent:
             state_messages: Optional list to append messages to (for graph visualization)
             chat_messages: Optional chat history to include in context
             initial_context: Optional initial context/variables for CodeAct state
+            keep_last_n_vars: Number of most recent variables to keep in context (default: 2)
 
         Returns:
             Tuple of (answer, usage_metrics, state_messages)
@@ -465,8 +467,16 @@ class CugaAgent:
 
                 final_context = {}
                 if final_state and "context" in final_state:
-                    final_context = final_state["context"]
-                    logger.debug(f"Preserving {len(final_context)} variables in context for next turn")
+                    full_context = final_state["context"]
+                    if keep_last_n_vars > 0 and len(full_context) > keep_last_n_vars:
+                        context_items = list(full_context.items())
+                        final_context = dict(context_items[-keep_last_n_vars:])
+                        logger.debug(
+                            f"Kept last {keep_last_n_vars} of {len(full_context)} variables in context for next turn"
+                        )
+                    else:
+                        final_context = full_context
+                        logger.debug(f"Preserving {len(final_context)} variables in context for next turn")
 
                 state_messages.append(
                     AIMessage(content=output.model_dump_json(), additional_kwargs={"context": final_context})
@@ -674,6 +684,7 @@ Your output MUST be one of these two types. Do not include *any* other text, exp
 - Output *only* a Python code snippet in a fenced code block (```python...```).
 - You MUST `await` all tool calls (they are async).
 - Use `print()` to output any data you need to see or use.
+- The print statement must be on a descriptive variable (not generic names like 'result' or 'data') defined before the print that represents the final output.
 - This is the only way to perform actions or retrieve data.
 
 **TYPE 2: Return to User with Text**
@@ -719,15 +730,15 @@ Your output MUST be one of these two types. Do not include *any* other text, exp
 ❌ **INCORRECT (Do NOT do this):**
 "Okay, I need to get the list of accounts first. I'll call the `get_my_accounts` tool."
 ```python
-result = await digital_sales_get_my_accounts_my_accounts_get()
-print(result)
+my_accounts = await digital_sales_get_my_accounts_my_accounts_get()
+print(my_accounts)
 ````
 
 ✅ **CORRECT (Output *only* this):**
 
 ```python
-result = await digital_sales_get_my_accounts_my_accounts_get()
-print(result)
+my_accounts = await digital_sales_get_my_accounts_my_accounts_get()
+print(my_accounts)
 ```
 
 ❌ **INCORRECT (Do NOT do this):**

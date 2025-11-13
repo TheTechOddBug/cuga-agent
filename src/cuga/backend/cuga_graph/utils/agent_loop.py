@@ -304,13 +304,16 @@ class AgentLoop:
 
     def get_stream(self, state, resume=None):
         both_none = state is None and resume is None
+
+        callbacks = [TokenUsageTracker()]
+        if settings.advanced_features.langfuse_tracing and self.langfuse_handler is not None:
+            callbacks.insert(0, self.langfuse_handler)
+
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,
             config={
                 "recursion_limit": 135,
-                "callbacks": [self.langfuse_handler, TokenUsageTracker()]
-                if settings.advanced_features.langfuse_tracing
-                else [TokenUsageTracker()],
+                "callbacks": callbacks,
                 "thread_id": self.thread_id,
             },
             stream_mode="updates",

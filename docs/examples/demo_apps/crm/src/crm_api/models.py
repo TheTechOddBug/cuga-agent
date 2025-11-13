@@ -12,7 +12,7 @@ class Account(Base):
     industry = Column(String(100), nullable=True)
     website = Column(String(255), nullable=True)
     phone = Column(String(50), nullable=True)
-    email = Column(String(255), nullable=True)
+    # email = Column(String(255), nullable=True)
     address = Column(Text, nullable=True)
     city = Column(String(100), nullable=True)
     state = Column(String(100), nullable=True)

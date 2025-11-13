@@ -4,7 +4,7 @@ from sqlalchemy.orm import sessionmaker
 import os
 
 # Use SQLite for simplicity, but can be easily changed to PostgreSQL
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./crm.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{os.path.abspath('crm.db')}")
 
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
@@ -24,6 +24,11 @@ def get_db():
 
 def init_db():
     from crm_api.models import Base
+
+    # Reset database file on each startup
+    db_path = os.path.abspath("crm.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
 
     Base.metadata.create_all(bind=engine)
 

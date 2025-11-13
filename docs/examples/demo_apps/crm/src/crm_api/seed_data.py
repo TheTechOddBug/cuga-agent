@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from math import gcd
 
 from crm_api.models import Account, Lead, Contact, Opportunity
 
@@ -953,8 +954,8 @@ def generate_accounts(count: int = 1000):
         region = REGIONS[i % len(REGIONS)]
 
         # Generate email based on company name
-        email_domain = EMAIL_DOMAINS[i % len(EMAIL_DOMAINS)]
-        email = f"contact@{company_name.lower().replace(' ', '').replace('.', '').replace(',', '')}.{email_domain}"
+        # email_domain = EMAIL_DOMAINS[i % len(EMAIL_DOMAINS)]
+        # email = f"contact@{company_name.lower().replace(' ', '').replace('.', '').replace(',', '')}.{email_domain}"
 
         # Generate phone number
         phone = f"+1-{555:03d}-{1000 + (i % 9000):04d}"
@@ -974,7 +975,7 @@ def generate_accounts(count: int = 1000):
             industry=industry,
             website=website,
             phone=phone,
-            email=email,
+            # email=email,
             address=address,
             city=city,
             state=state,
@@ -1044,7 +1045,7 @@ def generate_contacts(accounts: list, contacts_per_account: int = 5):
     contact_id = 0
     for account in accounts:
         # Generate 3-8 contacts per account
-        num_contacts = 3 + (contact_id % 6)
+        num_contacts = 1  # 3 + (contact_id % 6)
         for i in range(num_contacts):
             first_name = FIRST_NAMES[contact_id % len(FIRST_NAMES)]
             last_name = LAST_NAMES[contact_id % len(LAST_NAMES)]
@@ -1073,13 +1074,57 @@ def generate_contacts(accounts: list, contacts_per_account: int = 5):
     return contacts
 
 
+def permuted_value_1k(
+    opportunity_id: int,
+    min_value: int = 5_000,
+    max_value: int = 500_000,
+    step: int = 1_000,
+    a_hint: int = 1_664_525,  # seed for 'a'
+    b: int = 12_345,
+) -> int:
+    """
+    Deterministic permutation over K thousand-buckets so the last 3 digits are 000.
+    - Adjusts min/max to multiples of 'step'.
+    - Uses an affine permutation modulo K: rank = (a*x + b) % K with gcd(a, K) == 1.
+    - Returns: min_aligned + rank*step
+    """
+    if step <= 0:
+        raise ValueError("step must be positive")
+
+    # Align to the step (1,000) so values end with 000
+    min_aligned = ((min_value + step - 1) // step) * step
+    max_aligned = (max_value // step) * step
+    if min_aligned > max_aligned:
+        raise ValueError("Range too narrow after alignment to 'step'.")
+
+    # Number of distinct thousand-buckets
+    K = (max_aligned - min_aligned) // step + 1
+
+    # Map ID into [0, K-1]
+    x = opportunity_id % K
+
+    # Pick 'a' coprime with K (so the affine map is a permutation)
+    a = a_hint
+    # Nudge 'a' until gcd(a, K) == 1
+    while gcd(a, K) != 1:
+        a += 1
+
+    # Affine permutation
+    rank = (a * x + b) % K
+
+    # Map back to the value space (always ends with 000)
+    return min_aligned + rank * step
+
+
 def generate_opportunities(accounts: list, opportunities_per_account: int = 8):
     """Generate sample opportunities for accounts using predefined arrays"""
     opportunities = []
     opportunity_id = 0
-    for account in accounts:
+    for idx, account in enumerate(accounts):
+        if idx % 5 != 0:
+            continue
         # Generate 2-10 opportunities per account
-        num_opportunities = 2 + (opportunity_id % 9)
+        num_opportunities = 2  # + (opportunity_id % 9)
         for i in range(num_opportunities):
             opportunity_name = OPPORTUNITY_NAMES[opportunity_id % len(OPPORTUNITY_NAMES)]
             description = OPPORTUNITY_DESCRIPTIONS[opportunity_id % len(OPPORTUNITY_DESCRIPTIONS)]
@@ -1090,9 +1135,9 @@ def generate_opportunities(accounts: list, opportunities_per_account: int = 8):
             close_date = datetime.now() + timedelta(days=days_ahead)
 
             # Generate value with some variation
-            base_value = 5000 + (opportunity_id % 50) * 1000  # 5k to 50k base
-            multiplier = 1 + (opportunity_id % 10)  # 1x to 10x multiplier
-            value = base_value * multiplier
+            # base_value = 5000 + (opportunity_id % 50) * 1000  # 5k to 50k base
+            # multiplier = 1 + (opportunity_id % 10)  # 1x to 10x multiplier
+            value = permuted_value_1k(opportunity_id)
 
             # Generate probability based on stage
             prob_map = {

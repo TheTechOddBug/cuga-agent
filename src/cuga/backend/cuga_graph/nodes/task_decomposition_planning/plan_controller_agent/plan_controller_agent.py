@@ -18,7 +18,7 @@ from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_simple
 from cuga.config import settings
 from cuga.configurations.instructions_manager import InstructionsManager
-
+from loguru import logger
 
 instructions_manager = InstructionsManager()
 tracker = ActivityTracker()
@@ -44,7 +44,7 @@ class PlanControllerAgent(BaseAgent):
         result = AIMessage(content=json.dumps(result.model_dump()), name=name)
         return result
 
-    async def run(self, input_variables: AgentState) -> AIMessage:
+    async def run(self, input_variables: AgentState) -> PlanControllerOutput:
         task_input = {
             "task_decomposition": input_variables.task_decomposition.format_as_list(),
             "stm_all_history": input_variables.stm_all_history,
@@ -56,7 +56,9 @@ class PlanControllerAgent(BaseAgent):
         data["stm_all_history"] = task_input["stm_all_history"]
         data["variables_history"] = var_manager.get_variables_summary(last_n=6)
         data["instructions"] = instructions_manager.get_instructions(self.name)
-        return await self.chain.ainvoke(data)
+        result: PlanControllerOutput = await self.chain.ainvoke(data)
+        logger.debug(f"PlanControllerOutput: {result.model_dump_json()}")
+        return result
 
     @staticmethod
     def create():

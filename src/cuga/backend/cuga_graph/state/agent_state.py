@@ -53,6 +53,7 @@ class AgentState(BaseModel):
     api_last_step: Optional[str] = None
     guidance: Optional[str] = None
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
+    chat_agent_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None
@@ -112,9 +113,9 @@ class AgentState(BaseModel):
     # ):
     #     self.api_planner_history[-1].agent_output = output
     def append_to_last_chat_message(self, value: str):
-        # msg = self.chat_messages[-1]
+        # msg = self.chat_agent_messages[-1]
         # # Update the last message with appended content
-        self.chat_messages[-1].content += value
+        self.chat_agent_messages[-1].content += value
 
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])

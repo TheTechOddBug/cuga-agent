@@ -130,7 +130,10 @@ class PlanControllerNode(BaseNode):
         plan_controller_output = PlanControllerOutput(**json.loads(result.content))
         tracker.collect_step(step=Step(name=name, data=plan_controller_output.model_dump_json()))
         state.messages.append(result)
-        if plan_controller_output.conclude_task:
+        if plan_controller_output.conclude_task or (
+            all(status == "completed" for status in plan_controller_output.subtasks_progress)
+            and plan_controller_output.next_subtask == ""
+        ):
             state.last_planner_answer = plan_controller_output.conclude_final_answer
             return Command(update=state.model_dump(), goto="FinalAnswerAgent")
         else:
@@ -153,7 +156,7 @@ class PlanControllerNode(BaseNode):
             state.sub_task_app = plan_controller_output.next_subtask_app
             state.sub_task_type = plan_controller_output.next_subtask_type
             if plan_controller_output.next_subtask_type == "api":
-                # TODO: Remove this once we have a better way to handle chat messages
+                # Clear chat agent messages when switching to API tasks
                 state.chat_messages = []
                 state.api_intent_relevant_apps_current = [
                     app

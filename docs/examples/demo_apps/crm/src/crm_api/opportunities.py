@@ -17,7 +17,7 @@ def create_opportunity(opportunity: OpportunityCreate, db: Session = Depends(get
 @router.get("/", response_model=PaginatedResponse[OpportunityResponse])
 def get_opportunities(
     skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(300, ge=1, le=300),
     account_id: Optional[int] = Query(None, description="Filter opportunities by account ID"),
     db: Session = Depends(get_db),
 ):

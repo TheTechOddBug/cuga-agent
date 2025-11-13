@@ -22,7 +22,7 @@ class BaseCRUD:
     def get(self, db: Session, id: int):
         return db.query(self.model).filter(self.model.id == id).first()
 
-    def get_paginated(self, db: Session, skip: int = 0, limit: int = 20):
+    def get_paginated(self, db: Session, skip: int = 0, limit: int = 300):
         total = db.query(self.model).count()
         items = db.query(self.model).offset(skip).limit(limit).all()
         pages = math.ceil(total / limit) if limit > 0 else 0
@@ -60,7 +60,7 @@ class AccountCRUD(BaseCRUD):
     def __init__(self):
         super().__init__(Account)
 
-    def get_paginated(self, db: Session, skip: int = 0, limit: int = 20, state: Optional[str] = None):
+    def get_paginated(self, db: Session, skip: int = 0, limit: int = 300, state: Optional[str] = None):
         query = db.query(self.model)
 
         if state is not None:
@@ -83,12 +83,25 @@ class ContactCRUD(BaseCRUD):
     def __init__(self):
         super().__init__(Contact)
 
+    def get_paginated(self, db: Session, skip: int = 0, limit: int = 300, email: Optional[str] = None):
+        query = db.query(self.model)
+
+        if email is not None:
+            query = query.filter(self.model.email == email)
+
+        total = query.count()
+        items = query.offset(skip).limit(limit).all()
+        pages = math.ceil(total / limit) if limit > 0 else 0
+        page = (skip // limit) + 1 if limit > 0 else 1
+
+        return PaginatedResponse(items=items, total=total, page=page, pages=pages, per_page=limit)
+
 
 class OpportunityCRUD(BaseCRUD):
     def __init__(self):
         super().__init__(Opportunity)
 
-    def get_paginated(self, db: Session, skip: int = 0, limit: int = 20, account_id: Optional[int] = None):
+    def get_paginated(self, db: Session, skip: int = 0, limit: int = 300, account_id: Optional[int] = None):
         query = db.query(self.model)
 
         if account_id is not None:

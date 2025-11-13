@@ -84,7 +84,7 @@ class FinalAnswerNode(BaseNode):
         # Handle direct chat calls (no processing needed)
         if state.sender == NodeNames.CHAT_AGENT:
             state.sender = name
-            final_answer_content = state.chat_messages[-1].content
+            final_answer_content = state.chat_agent_messages[-1].content
             state.final_answer = final_answer_content
             final_answer_output = FinalAnswerOutput(
                 thoughts=["Chat response provided directly."], final_answer=final_answer_content

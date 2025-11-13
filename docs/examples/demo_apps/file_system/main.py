@@ -17,7 +17,7 @@ import fnmatch
 from mcp.server.fastmcp import FastMCP
 
 # Initialize FastMCP server
-mcp = FastMCP("secure-filesystem-server")
+mcp = FastMCP("secure-filesystem-server", port=8112)
 
 # Global allowed directories
 allowed_directories: List[str] = []
@@ -604,7 +604,7 @@ def main():
     print(f"Allowed directories: {dirs}", file=sys.stderr)
 
     # Run the server
-    mcp.run()
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":

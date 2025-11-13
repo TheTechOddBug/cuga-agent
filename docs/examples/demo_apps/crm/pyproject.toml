@@ -6,7 +6,7 @@ authors = [
     {name = "Your Name", email = "your.email@example.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -34,10 +34,13 @@ dependencies = [
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.0",
     "faker>=20.1.0",
+    "fastmcp>=2.13.0.2",
 ]
 
 [project.scripts]
-crm-api = "crm_api.main:main"
+crm-server = "crm_api.main:main"
+crm-mcp = "crm_api.wrap_as_mcp:main"
+crm = "crm_api.run_all:main"
 
 [build-system]
 requires = ["hatchling"]

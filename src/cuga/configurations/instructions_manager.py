@@ -233,7 +233,11 @@ class InstructionsManager:
             logger.error(f"Error getting instructions for key '{key}': {e}")
             return ""
 
-    def set_instructions_from_one_file(self, instructions: str):
+    def set_instructions_from_one_file(self, instructions: str | None = None):
+        if not instructions:
+            self._in_memory_cache.clear()
+            return
+
         res = parse_markdown_sections(instructions)
         if res.personal_information:
             tracker.pi = res.personal_information

@@ -21,7 +21,7 @@ class AccountBase(BaseModel):
     industry: Optional[str] = None
     website: Optional[str] = None
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    # email: Optional[EmailStr] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
