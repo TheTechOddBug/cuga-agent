@@ -26,7 +26,7 @@ As a plan controller agent, your role is to track the progress of a planner agen
 2.  `subtasks_progress`: A list of strings, where each string is the progress status ('not-started', 'in-progress', or 'completed') for the corresponding subtask in the main `Subtasks` input list. The length of this list must be equal to the length of the `Subtasks` list.
 3.  `next_subtask`: A natural language description of the immediate next action for the planner agent. This should be derived from the next subtask that is not yet 'completed' and should reference variables from the `Variables History` when applicable. Do not include the App name.
 4.  `next_subtask_type`: string - The type of the `next_subtask`, either 'web' or 'api'.
-5.  `next_subtask_app`: string - If `next_subtask_type` is 'api', this is the application name (e.g., 'outlook', 'Gmail API'). If `next_subtask_type` is 'web', this is an empty string.
+5.  `next_subtask_app`: string - **CRITICAL**: If `next_subtask_type` is 'api', this field MUST contain the application name (e.g., 'outlook', 'Gmail API') and CANNOT be empty. If `next_subtask_type` is 'web', this should be an empty string.
 6.  `conclude_task`: boolean - Determine whether to conclude the original task.
 7.  `conclude_final_answer`: A final answer in case `conclude_task` is true.
 

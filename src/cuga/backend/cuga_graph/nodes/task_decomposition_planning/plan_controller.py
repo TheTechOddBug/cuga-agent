@@ -158,11 +158,27 @@ class PlanControllerNode(BaseNode):
             if plan_controller_output.next_subtask_type == "api":
                 # Clear chat agent messages when switching to API tasks
                 state.chat_messages = []
+                if not plan_controller_output.next_subtask_app:
+                    logger.error(
+                        f"PlanControllerAgent returned next_subtask_type='api' but next_subtask_app is empty. "
+                        f"This violates the output schema. next_subtask: {plan_controller_output.next_subtask}"
+                    )
+                    raise ValueError(
+                        "PlanControllerAgent must specify next_subtask_app when next_subtask_type is 'api'"
+                    )
                 state.api_intent_relevant_apps_current = [
                     app
                     for app in state.api_intent_relevant_apps
                     if app.name == plan_controller_output.next_subtask_app
                 ]
+                if not state.api_intent_relevant_apps_current:
+                    logger.error(
+                        f"No matching app found for next_subtask_app='{plan_controller_output.next_subtask_app}'. "
+                        f"Available apps: {[app.name for app in state.api_intent_relevant_apps]}"
+                    )
+                    raise ValueError(
+                        f"App '{plan_controller_output.next_subtask_app}' not found in api_intent_relevant_apps"
+                    )
                 state.api_shortlister_all_filtered_apis = {}
                 state.api_shortlister_all_filtered_apis[
                     state.api_intent_relevant_apps_current[0].name

@@ -1,6 +1,6 @@
 from typing import List, Literal, Union
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PlanControllerOutput(BaseModel):
@@ -24,6 +24,15 @@ class PlanControllerOutput(BaseModel):
         if v == "" or v is None:
             return None
         return v
+
+    @model_validator(mode='after')
+    def validate_api_task_has_app(self):
+        if self.next_subtask_type == 'api' and not self.next_subtask_app:
+            raise ValueError(
+                "When next_subtask_type is 'api', next_subtask_app must be specified (non-empty string). "
+                f"Got next_subtask_type='api' with next_subtask_app='{self.next_subtask_app}'"
+            )
+        return self
 
 
 parser = PydanticOutputParser(pydantic_object=PlanControllerOutput)
