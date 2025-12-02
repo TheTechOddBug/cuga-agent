@@ -1,0 +1,693 @@
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import { Send, RotateCcw, Bot, User, FileText } from "lucide-react";
+import CardManager from "./CardManager";
+import { StopButton } from "./floating/stop_button";
+import { fetchStreamingData } from "./StreamingWorkflow";
+import "./CustomChat.css";
+
+interface Message {
+  id: string;
+  text: string;
+  isUser: boolean;
+  timestamp: number;
+  isCardResponse?: boolean;
+  chatInstance?: ChatInstance;
+}
+
+// Minimal ChatInstance interface compatible with existing code
+interface ChatInstance {
+  messaging: {
+    addMessage: (message: any) => Promise<void>;
+    addMessageChunk?: (chunk: any) => void;
+  };
+  on?: (options: { type: string; handler: (event: any) => void }) => void;
+}
+
+const WELCOME_TEXT = `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; padding: 16px; color: white; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); margin: 16px 0;">
+  <div style="display: flex; align-items: center; gap: 12px;">
+    <div style="flex: 1;">
+      <h2 style="font-size: 1.2rem; font-weight: 700; margin: 0 0 4px 0;">👋 I'm CUGA</h2>
+      <p style="font-size: 0.9rem; margin: 0; opacity: 0.9;">Your Digital Agent</p>
+    </div>
+    <div style="text-align: right;">
+      <p style="margin: 0; font-size: 0.8rem; font-weight: 500; opacity: 0.9;">✨ Just ask!</p>
+    </div>
+  </div>
+</div>`;
+
+interface CustomChatProps {
+  onVariablesUpdate?: (variables: Record<string, any>, history: Array<any>) => void;
+  onFileAutocompleteOpen?: () => void;
+  onFileHover?: (filePath: string | null) => void;
+  onMessageSent?: (message: string) => void;
+}
+
+export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent }: CustomChatProps) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputValue, setInputValue] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLDivElement>(null);
+  const currentChatInstanceRef = useRef<ChatInstance | null>(null);
+  const [showFileAutocomplete, setShowFileAutocomplete] = useState(false);
+  const [autocompleteQuery, setAutocompleteQuery] = useState("");
+  const [allFiles, setAllFiles] = useState<Array<{ name: string; path: string }>>([]);
+  const [filteredFiles, setFilteredFiles] = useState<Array<{ name: string; path: string }>>([]);
+  const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const [selectedFiles, setSelectedFiles] = useState<Array<{ name: string; path: string; id: string }>>([]);
+
+  // Create a simple chat instance interface
+  const createChatInstance = useCallback((): ChatInstance => {
+    return {
+      messaging: {
+        addMessage: async (message: any) => {
+          // Handle message addition if needed
+        },
+      },
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentChatInstanceRef.current) {
+      currentChatInstanceRef.current = createChatInstance();
+    }
+  }, [createChatInstance]);
+
+  // Listen for variables updates from CardManager
+  useEffect(() => {
+    const handleVariablesUpdate = ((event: CustomEvent) => {
+      console.log('[CustomChat] Received variablesUpdate event:', event.detail);
+      const { variables, history } = event.detail;
+      console.log('[CustomChat] Variables keys:', Object.keys(variables));
+      console.log('[CustomChat] History length:', history.length);
+      if (onVariablesUpdate) {
+        console.log('[CustomChat] Calling onVariablesUpdate callback');
+        onVariablesUpdate(variables, history);
+      } else {
+        console.warn('[CustomChat] onVariablesUpdate callback is not defined!');
+      }
+    }) as EventListener;
+
+    if (typeof window !== "undefined") {
+      console.log('[CustomChat] Setting up variablesUpdate event listener');
+      window.addEventListener('variablesUpdate', handleVariablesUpdate);
+      return () => {
+        console.log('[CustomChat] Cleaning up variablesUpdate event listener');
+        window.removeEventListener('variablesUpdate', handleVariablesUpdate);
+      };
+    }
+  }, []);
+
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Show welcome message on mount
+  useEffect(() => {
+    if (messages.length === 0) {
+      setMessages([
+        {
+          id: "welcome",
+          text: WELCOME_TEXT,
+          isUser: false,
+          timestamp: Date.now(),
+        },
+      ]);
+    }
+  }, []);
+
+  // Load workspace files using shared service with enforced throttling
+  useEffect(() => {
+    const loadFiles = async () => {
+      try {
+        const { workspaceService } = await import('./workspaceService');
+        const data = await workspaceService.getWorkspaceTree();
+        const files = extractFiles(data.tree || []);
+        setAllFiles(files);
+      } catch (error) {
+        console.error('Error loading files:', error);
+      }
+    };
+
+    loadFiles();
+    const interval = setInterval(loadFiles, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Filter files based on query
+  useEffect(() => {
+    if (!showFileAutocomplete) {
+      setFilteredFiles([]);
+      return;
+    }
+
+    if (autocompleteQuery === '') {
+      setFilteredFiles(allFiles.slice(0, 10));
+    } else {
+      const lowerQuery = autocompleteQuery.toLowerCase();
+      const filtered = allFiles.filter(file => {
+        const nameMatch = file.name.toLowerCase().includes(lowerQuery);
+        const pathMatch = file.path.toLowerCase().includes(lowerQuery);
+        return nameMatch || pathMatch;
+      }).slice(0, 10);
+      setFilteredFiles(filtered);
+    }
+    setSelectedFileIndex(0);
+  }, [showFileAutocomplete, autocompleteQuery, allFiles]);
+
+  // Highlight file when selection changes via keyboard navigation
+  useEffect(() => {
+    if (showFileAutocomplete && filteredFiles.length > 0 && selectedFileIndex >= 0 && selectedFileIndex < filteredFiles.length) {
+      onFileHover?.(filteredFiles[selectedFileIndex].path);
+    } else if (!showFileAutocomplete) {
+      onFileHover?.(null);
+    }
+  }, [selectedFileIndex, showFileAutocomplete, filteredFiles, onFileHover]);
+
+  const extractFiles = (nodes: any[]): Array<{ name: string; path: string }> => {
+    const files: Array<{ name: string; path: string }> = [];
+    for (const node of nodes) {
+      if (node.type === "file") {
+        files.push({ name: node.name, path: node.path });
+      } else if (node.children) {
+        files.push(...extractFiles(node.children));
+      }
+    }
+    return files;
+  };
+
+
+  const handleSend = async () => {
+    if (!inputRef.current) return;
+
+    const text = inputRef.current.textContent?.trim() || '';
+    if (!text || isProcessing) return;
+
+    // Convert file reference elements back to ./path format for backend processing
+    let processedText = text;
+    const fileElements = inputRef.current.querySelectorAll('.inline-file-reference');
+
+    fileElements.forEach((element) => {
+      const filePath = element.getAttribute('data-file-path');
+      const fileName = element.getAttribute('data-file-name');
+      if (filePath && fileName) {
+        // Replace the element's text content with the dot path
+        processedText = processedText.replace(element.textContent || '', `./${filePath}`);
+      }
+    });
+
+    // Create display HTML for the message (keep the styled file references)
+    const displayHTML = inputRef.current.innerHTML;
+
+    // Add user message with styled HTML
+    const userMessage: Message = {
+      id: `msg-${Date.now()}`,
+      text: displayHTML, // Store the HTML for proper rendering
+      isUser: true,
+      timestamp: Date.now(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+
+    // Notify parent component that a message was sent
+    if (onMessageSent) {
+      onMessageSent(processedText);
+    }
+
+    // Clear the input
+    inputRef.current.innerHTML = '';
+    setInputValue("");
+    setSelectedFiles([]);
+    setIsProcessing(true);
+
+    // Create a new chat instance for this message
+    const newChatInstance = createChatInstance();
+    currentChatInstanceRef.current = newChatInstance;
+
+    // Add bot card response message
+    const botMessage: Message = {
+      id: `bot-${Date.now()}`,
+      text: "",
+      isUser: false,
+      timestamp: Date.now(),
+      isCardResponse: true,
+      chatInstance: newChatInstance,
+    };
+
+    setMessages((prev) => [...prev, botMessage]);
+
+    try {
+      // Call the streaming workflow with processed text (bracket format converted to ./path)
+      await fetchStreamingData(newChatInstance as any, processedText);
+    } catch (error) {
+      console.error("Error sending message:", error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRestart = async () => {
+    // Reset backend
+    try {
+      const response = await fetch('/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      console.error("Error calling reset endpoint:", error);
+    }
+
+    // Clear messages and show welcome
+    setMessages([
+      {
+        id: "welcome",
+        text: WELCOME_TEXT,
+        isUser: false,
+        timestamp: Date.now(),
+      },
+    ]);
+    setIsProcessing(false);
+    
+    // Create a fresh chat instance
+    currentChatInstanceRef.current = createChatInstance();
+  };
+
+  const handleContentEditableInput = (e: React.FormEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const text = target.textContent || '';
+
+    setInputValue(text);
+
+    // Check for @ trigger
+    const lastAtIndex = text.lastIndexOf('@');
+    if (lastAtIndex !== -1) {
+      const charBeforeAt = lastAtIndex > 0 ? text[lastAtIndex - 1] : ' ';
+      const isValidTrigger = lastAtIndex === 0 || /\s/.test(charBeforeAt);
+
+      if (isValidTrigger) {
+        const textAfterAt = text.substring(lastAtIndex + 1);
+        const searchTerm = textAfterAt.split(/\s/)[0];
+        setAutocompleteQuery(searchTerm);
+        setShowFileAutocomplete(true);
+        onFileAutocompleteOpen?.();
+      } else {
+        setShowFileAutocomplete(false);
+      }
+    } else {
+      setShowFileAutocomplete(false);
+    }
+
+    // Extract file references from the HTML content
+    const foundFiles: Array<{ name: string; path: string; id: string }> = [];
+    const fileElements = target.querySelectorAll('.inline-file-reference');
+
+    fileElements.forEach((element) => {
+      const filePath = element.getAttribute('data-file-path');
+      const fileName = element.getAttribute('data-file-name');
+      if (filePath && fileName) {
+        const existingFile = selectedFiles.find(f => f.path === filePath);
+        const id = existingFile?.id || `file-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        foundFiles.push({ name: fileName, path: filePath, id });
+      }
+    });
+
+    setSelectedFiles(foundFiles);
+
+    // Auto-resize
+    target.style.height = 'auto';
+    target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
+  };
+
+  const handleContentEditableClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+
+    // Check if clicked element is a remove button
+    if (target.classList.contains('file-chip-remove')) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Find the parent file reference element
+      const fileChip = target.closest('.inline-file-reference');
+      if (fileChip && inputRef.current) {
+        // Remove the file chip from the DOM
+        fileChip.remove();
+
+        // Update the input and selected files
+        handleContentEditableInput({ currentTarget: inputRef.current } as any);
+
+        // Focus back to the input
+        inputRef.current.focus();
+      }
+      return;
+    }
+
+    // Check if clicked within a file chip (but not on remove button)
+    const fileChip = target.closest('.inline-file-reference');
+    if (fileChip) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Focus the input but position cursor appropriately
+      if (inputRef.current) {
+        inputRef.current.focus();
+
+        // Try to place cursor after the chip
+        const range = document.createRange();
+        const selection = window.getSelection();
+
+        // Find the next text node or position after the chip
+        let nextNode = fileChip.nextSibling;
+        if (nextNode && nextNode.nodeType === Node.TEXT_NODE) {
+          range.setStart(nextNode, 0);
+          range.setEnd(nextNode, 0);
+        } else {
+          // Create a text node after the chip if none exists
+          const textNode = document.createTextNode('');
+          fileChip.parentNode?.insertBefore(textNode, nextNode);
+          range.setStart(textNode, 0);
+          range.setEnd(textNode, 0);
+        }
+
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    }
+  };
+
+
+  const handleFileSelect = (filePath: string) => {
+    if (!inputRef.current) return;
+
+    const selectedFile = allFiles.find(f => f.path === filePath);
+    if (!selectedFile) return;
+
+    // Find the @ trigger using the current selection/cursor position
+    const selection = window.getSelection();
+    const range = selection?.getRangeAt(0);
+
+    if (!range) return;
+
+    // Create the file reference element
+    const fileElement = document.createElement('span');
+    fileElement.className = 'inline-file-reference';
+    fileElement.setAttribute('data-file-path', filePath);
+    fileElement.setAttribute('data-file-name', selectedFile.name);
+    fileElement.setAttribute('contentEditable', 'false');
+    fileElement.innerHTML = `<svg class="file-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path><polyline points="14,2 14,8 20,8"></polyline></svg><span class="file-name">${selectedFile.name}</span><button class="file-chip-remove" type="button" aria-label="Remove file">×</button>`;
+
+    // Find and replace the @ trigger and search term
+    const text = inputRef.current.textContent || '';
+    const lastAtIndex = text.lastIndexOf('@');
+    if (lastAtIndex === -1) return;
+
+    const textAfterAt = text.substring(lastAtIndex + 1);
+    const searchTerm = textAfterAt.split(/\s/)[0];
+
+    // Find the text nodes containing the @ and search term
+    const treeWalker = document.createTreeWalker(
+      inputRef.current,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+
+    let foundAtNode: Text | null = null;
+    let atOffset = -1;
+
+    let currentNode;
+    while (currentNode = treeWalker.nextNode()) {
+      const nodeText = currentNode.textContent || '';
+      const atIndex = nodeText.indexOf('@');
+
+      if (atIndex !== -1) {
+        foundAtNode = currentNode as Text;
+        atOffset = atIndex;
+        break;
+      }
+    }
+
+    if (foundAtNode && atOffset !== -1) {
+      // Calculate the range for @ and search term
+      const searchTermEnd = atOffset + 1 + searchTerm.length;
+
+      // Create a range to replace the @ and search term
+      const replaceRange = document.createRange();
+      replaceRange.setStart(foundAtNode, atOffset);
+      replaceRange.setEnd(foundAtNode, Math.min(searchTermEnd, foundAtNode.length));
+
+      // Replace the range with the file element
+      replaceRange.deleteContents();
+      replaceRange.insertNode(fileElement);
+
+      // Add a space after the file element
+      const spaceNode = document.createTextNode(' ');
+      replaceRange.setStartAfter(fileElement);
+      replaceRange.insertNode(spaceNode);
+
+      // Position cursor after the space
+      replaceRange.setStartAfter(spaceNode);
+      replaceRange.setEndAfter(spaceNode);
+
+      selection?.removeAllRanges();
+      selection?.addRange(replaceRange);
+    }
+
+    setShowFileAutocomplete(false);
+
+    // Update selected files
+    handleContentEditableInput({ currentTarget: inputRef.current } as any);
+
+    // Ensure focus remains
+    inputRef.current.focus();
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    e.preventDefault();
+
+    // Get plain text from clipboard
+    const text = e.clipboardData.getData('text/plain');
+
+    // Insert the plain text at cursor position
+    const selection = window.getSelection();
+    const range = selection?.getRangeAt(0);
+
+    if (range && inputRef.current) {
+      range.deleteContents();
+      const textNode = document.createTextNode(text);
+      range.insertNode(textNode);
+
+      // Move cursor to end of inserted text
+      range.setStartAfter(textNode);
+      range.setEndAfter(textNode);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      // Trigger input handler to update state
+      handleContentEditableInput({ currentTarget: inputRef.current } as any);
+    }
+  };
+
+  const handleKeyPress = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Check if cursor is inside a file chip
+    const selection = window.getSelection();
+    const range = selection?.getRangeAt(0);
+    let isInsideChip = false;
+
+    if (range) {
+      let node: Node | null = range.commonAncestorContainer;
+      // If it's a text node, check parent
+      if (node.nodeType === Node.TEXT_NODE) {
+        node = node.parentNode;
+      }
+
+      // Walk up the DOM to check if we're inside a file chip
+      while (node && node !== e.currentTarget) {
+        if (node instanceof HTMLElement && node.classList.contains('inline-file-reference')) {
+          isInsideChip = true;
+          break;
+        }
+        node = node.parentNode;
+      }
+    }
+
+    // Prevent editing within file chips
+    if (isInsideChip) {
+      // Allow navigation keys and special keys
+      const allowedKeys = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'];
+      const controlKeys = ['Backspace', 'Delete'];
+
+      if (!allowedKeys.includes(e.key) && !controlKeys.includes(e.key) && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        return;
+      }
+
+      // Handle backspace/delete within chips - remove the entire chip
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        let chipElement: Element | null = null;
+
+        if (range?.commonAncestorContainer?.parentNode instanceof HTMLElement) {
+          chipElement = range.commonAncestorContainer.parentNode.closest('.inline-file-reference');
+        }
+        if (!chipElement && range?.startContainer?.parentNode instanceof HTMLElement) {
+          chipElement = range.startContainer.parentNode.closest('.inline-file-reference');
+        }
+
+        if (chipElement && inputRef.current) {
+          chipElement.remove();
+          handleContentEditableInput({ currentTarget: inputRef.current } as any);
+          inputRef.current.focus();
+        }
+        return;
+      }
+    }
+
+    if (showFileAutocomplete && filteredFiles.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedFileIndex((prev) => (prev + 1) % filteredFiles.length);
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedFileIndex((prev) => (prev - 1 + filteredFiles.length) % filteredFiles.length);
+        return;
+      }
+
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        handleFileSelect(filteredFiles[selectedFileIndex].path);
+        return;
+      }
+
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowFileAutocomplete(false);
+        return;
+      }
+    }
+
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  return (
+    <div className="custom-chat-container">
+      <div className="custom-chat-header">
+        <div className="chat-header-left">
+          <Bot size={20} />
+          <span className="chat-header-title">CUGA Agent</span>
+        </div>
+        <button
+          className="chat-restart-btn"
+          onClick={handleRestart}
+          title="Restart conversation"
+        >
+          <RotateCcw size={16} />
+          <span>Restart</span>
+        </button>
+      </div>
+
+      <div className="custom-chat-messages">
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`message ${message.isUser ? "message-user" : "message-bot"}`}
+          >
+            <div className="message-avatar">
+              {message.isUser ? (
+                <User size={18} />
+              ) : (
+                <img 
+                  src="https://avatars.githubusercontent.com/u/230847519?s=48&v=4" 
+                  alt="Bot Avatar"
+                  className="bot-avatar-image"
+                />
+              )}
+            </div>
+            {message.isCardResponse && message.chatInstance ? (
+              <div className="message-content message-card-content">
+                <CardManager chatInstance={message.chatInstance as any} />
+              </div>
+            ) : (
+              <div
+                className="message-content"
+                dangerouslySetInnerHTML={{ __html: message.text }}
+              />
+            )}
+          </div>
+        ))}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="custom-chat-input-area">
+        <StopButton location="sidebar" />
+        <div className="chat-input-container">
+          <div className="textarea-wrapper">
+            <div
+              ref={inputRef}
+              id="main-input_field"
+              className="chat-input"
+              contentEditable={!isProcessing}
+              onInput={handleContentEditableInput}
+              onClick={handleContentEditableClick}
+              onKeyDown={handleKeyPress}
+              onPaste={handlePaste}
+              data-placeholder="Type your message... (use @ for file autocomplete - add multiple files)"
+              style={{
+                minHeight: "44px",
+                maxHeight: "120px",
+                overflowY: "auto",
+              }}
+            />
+          </div>
+          <button
+            className="chat-send-btn"
+            onClick={handleSend}
+            disabled={!inputValue.trim() || isProcessing}
+            title="Send message"
+          >
+            <Send size={18} />
+          </button>
+        </div>
+        
+        {showFileAutocomplete && filteredFiles.length > 0 && (
+          <div className="simple-file-autocomplete">
+            <div className="simple-file-autocomplete-header">
+              <span>Workspace Files</span>
+              <span className="file-count">{filteredFiles.length}</span>
+            </div>
+            <div className="simple-file-autocomplete-list">
+              {filteredFiles.map((file, index) => (
+                <div
+                  key={file.path}
+                  className={`simple-file-autocomplete-item ${index === selectedFileIndex ? 'selected' : ''}`}
+                  onClick={() => handleFileSelect(file.path)}
+                  onMouseEnter={() => {
+                    setSelectedFileIndex(index);
+                    onFileHover?.(filteredFiles[index].path);
+                  }}
+                  onMouseLeave={() => onFileHover?.(null)}
+                >
+                  <FileText size={16} className="file-icon" />
+                  <div className="file-info">
+                    <span className="file-name">{file.name}</span>
+                    <span className="file-path">./{file.path}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="simple-file-autocomplete-footer">
+              <span className="hint">↑↓ navigate • Enter/Tab select • Esc close</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+

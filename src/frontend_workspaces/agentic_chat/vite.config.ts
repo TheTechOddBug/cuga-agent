@@ -4,8 +4,13 @@ import * as path from 'path';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
+  const fakeStream = process.env.FAKE_STREAM === 'true';
+  
   let options: ViteUserConfig = {
     plugins: [react()],
+    define: {
+      FAKE_STREAM: JSON.stringify(fakeStream),
+    },
     build: {
       sourcemap: true,
       commonjsOptions: {

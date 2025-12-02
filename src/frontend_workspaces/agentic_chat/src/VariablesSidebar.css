@@ -322,3 +322,24 @@
   text-align: center;
 }
 
+.no-variables-message {
+  padding: 24px 16px;
+  text-align: center;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin: 12px;
+}
+
+.no-variables-message p {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+}
+
+.no-variables-message p:last-child {
+  margin-bottom: 0;
+  font-size: 12px;
+  color: #94a3b8;
+}
+

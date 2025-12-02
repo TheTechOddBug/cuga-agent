@@ -550,9 +550,6 @@ def start(
                 logger.info("✅ cuga_workspace directory created")
             else:
                 logger.info(f"✅ cuga_workspace directory found at {workspace_path}")
-            instructions_manager.set_instructions_from_one_file(
-                f"## Plan\n\nFor read and write operations, use the following path: {workspace_path}"
-            )
             # Clean up any existing processes on the ports we need
             logger.info("🧹 Checking for existing processes on required ports...")
             kill_processes_by_port(

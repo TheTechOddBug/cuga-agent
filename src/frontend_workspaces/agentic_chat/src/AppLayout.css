@@ -1,0 +1,61 @@
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background: linear-gradient(359deg, #e7f2ff, #ffffff);
+}
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 42px;
+  padding-left: 20%;
+  padding-right: 20%;
+}
+
+@media (max-width: 1200px) {
+  .main-layout {
+    padding-left: 10%;
+    padding-right: 10%;
+  }
+}
+
+@media (max-width: 768px) {
+  .main-layout {
+    padding-left: 5%;
+    padding-right: 5%;
+  }
+}
+
+@media (max-width: 640px) {
+  .main-layout {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+.chat-container {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  border-radius: 8px;
+}
+
+
+.chat-container .fullScreen {
+  height: 100%;
+  width: 100%;
+}
+
+/* Ensure chat content doesn't overflow */
+.chat-container > * {
+  max-width: 100%;
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+}
+

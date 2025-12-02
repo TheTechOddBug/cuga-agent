@@ -33,6 +33,9 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
     return null;
   }
 
+  // Always show sidebar if there's history, even if no current variables
+  const shouldShowSidebar = variableKeys.length > 0 || history.length > 0;
+
   const formatTimestamp = (timestamp: number) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -94,34 +97,41 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
               </div>
             )}
             <div className="variables-list">
-              {variableKeys.map((varName) => {
-                const variable = variables[varName];
-                return (
-                  <div
-                    key={varName}
-                    className="variable-item"
-                    onClick={() => setSelectedVariable({ name: varName, ...variable })}
-                  >
-                    <div className="variable-item-header">
-                      <code className="variable-name">{varName}</code>
-                      <span className="variable-type">{variable.type}</span>
-                    </div>
-                    {variable.description && (
-                      <div className="variable-description">{variable.description}</div>
-                    )}
-                    {variable.count_items !== undefined && variable.count_items > 1 && (
-                      <div className="variable-meta">
-                        <span className="variable-count">{variable.count_items} items</span>
+              {variableKeys.length === 0 && history.length > 0 ? (
+                <div className="no-variables-message">
+                  <p>No variables in current turn.</p>
+                  <p>Select a previous turn from the dropdown above to view its variables.</p>
+                </div>
+              ) : (
+                variableKeys.map((varName) => {
+                  const variable = variables[varName];
+                  return (
+                    <div
+                      key={varName}
+                      className="variable-item"
+                      onClick={() => setSelectedVariable({ name: varName, ...variable })}
+                    >
+                      <div className="variable-item-header">
+                        <code className="variable-name">{varName}</code>
+                        <span className="variable-type">{variable.type}</span>
                       </div>
-                    )}
-                    <div className="variable-preview">
-                      {variable.value_preview
-                        ? variable.value_preview.substring(0, 80) + (variable.value_preview.length > 80 ? "..." : "")
-                        : ""}
+                      {variable.description && (
+                        <div className="variable-description">{variable.description}</div>
+                      )}
+                      {variable.count_items !== undefined && variable.count_items > 1 && (
+                        <div className="variable-meta">
+                          <span className="variable-count">{variable.count_items} items</span>
+                        </div>
+                      )}
+                      <div className="variable-preview">
+                        {variable.value_preview
+                          ? variable.value_preview.substring(0, 80) + (variable.value_preview.length > 80 ? "..." : "")
+                          : ""}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         )}

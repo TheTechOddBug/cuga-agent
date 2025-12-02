@@ -539,6 +539,7 @@ dependencies = [
     { name = "playwright" },
     { name = "psutil" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "typer" },
     { name = "uvicorn" },
 ]
@@ -599,6 +600,7 @@ requires-dist = [
     { name = "playwright", specifier = "==1.49.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "python-dotenv" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rapidfuzz", marker = "extra == 'evaluation'" },
     { name = "typer", specifier = ">=0.15.3" },
     { name = "uvicorn" },

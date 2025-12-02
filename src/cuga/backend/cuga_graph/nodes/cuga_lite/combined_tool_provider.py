@@ -72,6 +72,11 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 param_type = param_schema.get('type', 'string')
                 param_desc = param_schema.get('description', '')
 
+                # Handle type that might be a list (e.g., ['string', 'null'])
+                if isinstance(param_type, list):
+                    # Take the first non-null type, or default to 'string'
+                    param_type = next((t for t in param_type if t != 'null'), 'string')
+
                 type_mapping = {
                     'string': str,
                     'integer': int,
@@ -88,9 +93,12 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                     param_constraints[param_name] = constraints
 
                 if param_name in required:
-                    field_definitions[param_name] = (python_type, ...)
+                    field_definitions[param_name] = (python_type, Field(..., description=param_desc))
                 else:
                     default_val = param_schema.get('default', None)
+                    # Make sure default values are hashable if needed
+                    if isinstance(default_val, list):
+                        default_val = None  # Skip unhashable defaults
                     field_definitions[param_name] = (
                         python_type,
                         Field(default=default_val, description=param_desc),

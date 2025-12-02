@@ -130,6 +130,29 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
     if auth_cfg:
         auth = Auth(type=auth_cfg['type'], value=auth_cfg.get('value'), key=auth_cfg.get('key'))
 
+    # Handle 'environment' field - support both 'env' and 'environment' keys
+    env_config = config.get('env') or config.get('environment')
+
+    # If environment contains headers (like x-api-key) and no auth is configured,
+    # convert the first header to auth configuration for HTTP/SSE transports
+    if env_config and not auth and isinstance(env_config, dict):
+        # Check if this is likely an HTTP/SSE transport (has URL, no command)
+        if config.get('url') and not config.get('command'):
+            # Convert first header-like key to auth
+            for key, value in env_config.items():
+                if isinstance(value, str):
+                    # Common API key header patterns
+                    if key.lower() in ['x-api-key', 'api-key', 'apikey', 'authorization']:
+                        if key.lower() == 'authorization':
+                            # Check if it's a bearer token
+                            if value.startswith('Bearer '):
+                                auth = Auth(type='bearer', value=value.replace('Bearer ', ''))
+                            else:
+                                auth = Auth(type='header', key='Authorization', value=value)
+                        else:
+                            auth = Auth(type='header', key=key, value=value)
+                        break
+
     # Auto-detect service type if not explicitly specified
     service_type = config.get('type')
     if not service_type:
@@ -152,7 +175,7 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
         url=config.get('url'),
         command=config.get('command'),
         args=config.get('args'),
-        env=config.get('env'),
+        env=env_config,
         transport=config.get('transport'),
         auth=auth,
         include=config.get('include'),

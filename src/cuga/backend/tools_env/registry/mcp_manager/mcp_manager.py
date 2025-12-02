@@ -533,8 +533,8 @@ class MCPManager:
                         else:
                             # Fallback to default if no output schema is defined
                             api_info["response_schemas"] = {
-                                "success": {"string"},
-                                "failure": {"string"},
+                                "success": {"type": "string"},
+                                "failure": {"type": "string"},
                             }
 
                     result[tool_name] = api_info
@@ -612,6 +612,7 @@ class MCPManager:
 
                     print(f"✓ Connected to MCP server '{name}' with {len(tools)} tools")
                     self.mcp_clients[name] = config.url or config.command
+                    self.auth_config[name] = config.auth
 
                     if not hasattr(self, 'mcp_transports'):
                         self.mcp_transports = {}
@@ -675,7 +676,16 @@ class MCPManager:
                 raise Exception(f"HTTP transport requires 'url' for {name}")
 
             print(f"Connecting to MCP server '{name}' via HTTP at {config.url}")
-            return StreamableHttpTransport(url=config.url)
+
+            # Build headers from auth config if available
+            headers = {}
+            if config.auth:
+                from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentication
+
+                query_params = {}
+                apply_authentication(config.auth, headers, query_params)
+
+            return StreamableHttpTransport(url=config.url, headers=headers if headers else None)
 
         else:
             raise Exception(f"Unknown transport type: {transport_type}")
@@ -778,6 +788,15 @@ class MCPManager:
     async def _call_mcp_server_tool(self, server_name: str, tool_name: str, args: dict):
         """Call a tool on an external MCP server using FastMCP client with SSE transport"""
         try:
+            # Build headers from auth config if available
+            headers = {}
+            query_params = {}
+            auth = self.auth_config.get(server_name)
+            if auth:
+                from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentication
+
+                apply_authentication(auth, headers, query_params)
+
             if hasattr(self, 'mcp_transports') and server_name in self.mcp_transports:
                 original_tool_name = tool_name.replace(f"{server_name}_", "")
 
@@ -803,9 +822,18 @@ class MCPManager:
                 base_url = url.replace('/sse', '')
                 original_tool_name = tool_name.replace(f"{server_name}_", "")
 
+                # Add query params to URL if present
+                url_with_params = base_url
+                if query_params:
+                    from urllib.parse import urlencode
+
+                    url_with_params = f"{base_url}?{urlencode(query_params)}"
+
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        f"{base_url}/call_tool", json={"name": original_tool_name, "arguments": args}
+                        f"{url_with_params}/call_tool",
+                        json={"name": original_tool_name, "arguments": args},
+                        headers=headers,
                     ) as response:
                         if response.status == 200:
                             result = await response.json()

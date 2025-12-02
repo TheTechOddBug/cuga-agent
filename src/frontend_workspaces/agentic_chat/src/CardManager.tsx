@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { ChatInstance } from "@carbon/ai-chat";
 import { marked } from "marked";
+
+// Simple ChatInstance interface (no Carbon dependency)
+interface ChatInstance {
+  messaging: {
+    addMessage?: (message: any) => Promise<void>;
+    addMessageChunk?: (chunk: any) => void;
+  };
+  on?: (options: { type: string; handler: (event: any) => void }) => void;
+}
 import "./CardManager.css";
 import "./CustomResponseStyles.css";
 // Import components from CustomResponseExample
@@ -16,7 +24,6 @@ import QaAgentComponent from "./qa_agent";
 import { FollowupAction } from "./Followup";
 import { fetchStreamingData } from "./StreamingWorkflow";
 import ToolCallFlowDisplay from "./ToolReview";
-import VariablesSidebar from "./VariablesSidebar";
 
 interface Step {
   id: string;
@@ -93,7 +100,20 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
       window.aiSystemInterface = {
         addStep: (title: string, content: string) => {
           console.log("🎯 addStep called:", title, content);
+          console.log("🎯 Content type:", typeof content);
           console.log("🎯 Current steps before adding:", currentSteps.length);
+          
+          // If content is JSON string, try to parse and log it
+          if (typeof content === 'string' && (content.startsWith('{') || content.startsWith('['))) {
+            try {
+              const parsed = JSON.parse(content);
+              console.log("🎯 Parsed content:", parsed);
+              console.log("🎯 Has variables:", !!parsed.variables);
+              console.log("🎯 Variables keys:", parsed.variables ? Object.keys(parsed.variables) : []);
+            } catch (e) {
+              console.log("🎯 Failed to parse content as JSON");
+            }
+          }
           
           const newStep: Step = {
             id: `step-${Date.now()}-${Math.random()}`,
@@ -172,6 +192,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
           setIsStopped(false);
           setShowDetails({});
           stepRefs.current = {};
+          // Note: variablesHistory is preserved across conversations
         },
         hasStepWithTitle: (title: string) => {
           return currentSteps.some(step => step.title === title);
@@ -215,6 +236,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
 
   // Extract variables from final answer steps and track by turn
   useEffect(() => {
+    console.log('[Variables Debug] Processing steps, total:', currentSteps.length);
     const newHistory: Array<{
       id: string;
       title: string;
@@ -225,10 +247,14 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
     let turnNumber = 0;
     
     currentSteps.forEach((step) => {
+      console.log('[Variables Debug] Step:', step.title, 'Type:', typeof step.content);
+      
       // Only process Answer or FinalAnswerAgent steps
       if (step.title !== "Answer" && step.title !== "FinalAnswerAgent") {
         return;
       }
+      
+      console.log('[Variables Debug] Processing Answer/FinalAnswerAgent step');
       
       try {
         let parsedContent: any;
@@ -237,25 +263,30 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
         if (typeof step.content === "string") {
           try {
             parsedContent = JSON.parse(step.content);
+            console.log('[Variables Debug] Parsed JSON content:', parsedContent);
             
             // Check if we have variables in the parsed content
             if (parsedContent.data !== undefined && parsedContent.variables) {
               variables = parsedContent.variables;
+              console.log('[Variables Debug] Found variables in data:', variables);
             } else if (parsedContent.variables) {
               variables = parsedContent.variables;
+              console.log('[Variables Debug] Found variables directly:', variables);
             }
           } catch (e) {
-            // Not JSON, skip
+            console.log('[Variables Debug] Failed to parse JSON:', e);
           }
         } else if (step.content && typeof step.content === "object" && 'variables' in step.content) {
           const contentWithVars = step.content as { variables?: Record<string, any> };
           if (contentWithVars.variables) {
             variables = contentWithVars.variables;
+            console.log('[Variables Debug] Found variables in object:', variables);
           }
         }
         
         // Only add to history if this step has variables
         if (Object.keys(variables).length > 0) {
+          console.log('[Variables Debug] Adding to history with', Object.keys(variables).length, 'variables');
           newHistory.push({
             id: step.id,
             title: `Turn ${turnNumber}`,
@@ -263,9 +294,11 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
             variables: variables
           });
           turnNumber++;
+        } else {
+          console.log('[Variables Debug] No variables found in this step');
         }
       } catch (e) {
-        // Skip this step
+        console.log('[Variables Debug] Error processing step:', e);
       }
     });
     
@@ -292,19 +325,34 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
       return hasChanges ? newHistory : prev;
     });
     
-    // Set selected answer to the most recent one if none selected or if current selection is gone
-    if (newHistory.length > 0) {
-      setSelectedAnswerId(prev => {
-        if (!prev || !newHistory.find(e => e.id === prev)) {
-          console.log('Auto-selecting most recent turn:', newHistory[newHistory.length - 1].title);
-          return newHistory[newHistory.length - 1].id;
+    // Update selectedAnswerId based on available history
+    setSelectedAnswerId(currentSelectedId => {
+      // If we have new history from current steps, use that
+      if (newHistory.length > 0) {
+        if (currentSelectedId && newHistory.find(e => e.id === currentSelectedId)) {
+          // Keep current selection if it still exists in new history
+          return currentSelectedId;
         }
-        return prev;
-      });
-    } else {
-      // No history, clear selection
-      setSelectedAnswerId(null);
-    }
+        // Auto-select most recent from new history
+        console.log('Auto-selecting most recent turn:', newHistory[newHistory.length - 1].title);
+        return newHistory[newHistory.length - 1].id;
+      }
+
+      // No new history from current steps, check if we have existing history
+      // This happens when forceReset is called - we want to preserve selection
+      if (variablesHistory.length > 0) {
+        if (currentSelectedId && variablesHistory.find(e => e.id === currentSelectedId)) {
+          // Keep current selection if it exists in existing history
+          return currentSelectedId;
+        }
+        // Auto-select most recent from existing history
+        console.log('Preserving selection from existing history:', variablesHistory[variablesHistory.length - 1].title);
+        return variablesHistory[variablesHistory.length - 1].id;
+      }
+
+      // No history at all
+      return null;
+    });
   }, [currentSteps]);
   
   // Update globalVariables based on selected answer
@@ -321,6 +369,17 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
       setGlobalVariables({});
     }
   }, [selectedAnswerId, variablesHistory]);
+
+  // Emit variables updates to App.tsx
+  useEffect(() => {
+    const event = new CustomEvent('variablesUpdate', {
+      detail: {
+        variables: globalVariables,
+        history: variablesHistory
+      }
+    });
+    window.dispatchEvent(event);
+  }, [globalVariables, variablesHistory]);
 
   // Function to generate natural language descriptions for each case
   const getCaseDescription = (stepTitle: string, parsedContent: any) => {
@@ -799,20 +858,10 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
   };
 
   return (
-    <>
-      {/* Global Variables Sidebar */}
-      <VariablesSidebar 
-        variables={globalVariables}
-        history={variablesHistory}
-        selectedAnswerId={selectedAnswerId}
-        onSelectAnswer={setSelectedAnswerId}
-      />
-      
-      {/* Main Content - sidebar overlays it when expanded */}
-      <div 
-        className="components-container" 
-        ref={cardRef}
-      >
+    <div 
+      className="components-container" 
+      ref={cardRef}
+    >
       {/* View mode toggle */}
       {!isStopped && (
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "6px" }}>
@@ -1234,8 +1283,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance }) => {
         </div>
       )}
 
-      </div>
-    </>
+    </div>
   );
 };
 

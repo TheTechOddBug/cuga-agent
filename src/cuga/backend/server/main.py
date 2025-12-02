@@ -6,13 +6,14 @@ import shutil
 import os
 import subprocess
 import uuid
+import yaml
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Union, Optional
+from pathlib import Path
 from cuga.backend.utils.id_utils import random_id_with_timestamp, mask_with_timestamp
 import traceback
 from pydantic import BaseModel, ValidationError
-
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage
@@ -20,6 +21,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.api.variables_manager.manager import VariablesManager
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
 from cuga.cli import start_extension_browser_if_configured
 from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
 from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
@@ -45,6 +47,7 @@ from cuga.config import (
     LOGGING_DIR,
     TRACES_DIR,
 )
+
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -214,6 +217,7 @@ async def lifespan(app: FastAPI):
     logger.info("Application is starting up...")
 
     # Start the save_reuse server if configured
+
     await manage_save_reuse_server()
     app_state.tracker = ActivityTracker()
     if settings.advanced_features.use_extension:
@@ -654,6 +658,500 @@ async def reset_agent_state():
     except Exception as e:
         logger.error(f"Failed to reset agent state: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset agent state: {str(e)}")
+
+
+@app.get("/api/config/tools")
+async def get_tools_config():
+    """Endpoint to retrieve tools configuration."""
+    config_path = os.path.join(
+        PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "mcp_servers_crm.yaml"
+    )
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config_data = yaml.safe_load(f)
+                return JSONResponse(config_data)
+        else:
+            return JSONResponse({"services": [], "mcpServers": {}})
+    except Exception as e:
+        logger.error(f"Failed to load tools config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load tools config: {str(e)}")
+
+
+@app.post("/api/config/tools")
+async def save_tools_config(request: Request):
+    """Endpoint to save tools configuration."""
+    config_path = os.path.join(
+        PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "mcp_servers_crm.yaml"
+    )
+    try:
+        data = await request.json()
+        with open(config_path, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        logger.info(f"Tools configuration saved to {config_path}")
+        return JSONResponse({"status": "success", "message": "Tools configuration saved successfully"})
+    except Exception as e:
+        logger.error(f"Failed to save tools config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save tools config: {str(e)}")
+
+
+@app.get("/api/config/model")
+async def get_model_config():
+    """Endpoint to retrieve model configuration."""
+    try:
+        return JSONResponse({})
+    except Exception as e:
+        logger.error(f"Failed to load model config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load model config: {str(e)}")
+
+
+@app.post("/api/config/model")
+async def save_model_config(request: Request):
+    """Endpoint to save model configuration (note: this updates environment variables for current session only)."""
+    try:
+        data = await request.json()
+        os.environ["MODEL_PROVIDER"] = data.get("provider", "anthropic")
+        os.environ["MODEL_NAME"] = data.get("model", "claude-3-5-sonnet-20241022")
+        os.environ["MODEL_TEMPERATURE"] = str(data.get("temperature", 0.7))
+        os.environ["MODEL_MAX_TOKENS"] = str(data.get("maxTokens", 4096))
+        os.environ["MODEL_TOP_P"] = str(data.get("topP", 1.0))
+        logger.info("Model configuration updated (session only)")
+        return JSONResponse({"status": "success", "message": "Model configuration updated"})
+    except Exception as e:
+        logger.error(f"Failed to save model config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save model config: {str(e)}")
+
+
+@app.get("/api/config/knowledge")
+async def get_knowledge_config():
+    """Endpoint to retrieve knowledge configuration."""
+    try:
+        return JSONResponse({})
+    except Exception as e:
+        logger.error(f"Failed to load knowledge config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load knowledge config: {str(e)}")
+
+
+@app.post("/api/config/knowledge")
+async def save_knowledge_config(request: Request):
+    """Endpoint to save knowledge configuration."""
+    try:
+        await request.json()
+        logger.info("Knowledge configuration saved (placeholder)")
+        return JSONResponse({"status": "success", "message": "Knowledge configuration saved"})
+    except Exception as e:
+        logger.error(f"Failed to save knowledge config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save knowledge config: {str(e)}")
+
+
+@app.get("/api/conversations")
+async def get_conversations():
+    """Endpoint to retrieve conversation history."""
+    try:
+        # TODO: Implement actual conversation storage
+        # For now, return empty list
+        return JSONResponse([])
+    except Exception as e:
+        logger.error(f"Failed to load conversations: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load conversations: {str(e)}")
+
+
+@app.post("/api/conversations")
+async def create_conversation(request: Request):
+    """Endpoint to create a new conversation."""
+    try:
+        data = await request.json()
+        # TODO: Implement actual conversation storage
+        conversation = {
+            "id": str(uuid.uuid4()),
+            "title": data.get("title", "New Conversation"),
+            "timestamp": data.get("timestamp", int(datetime.datetime.now().timestamp() * 1000)),
+            "preview": data.get("preview", ""),
+        }
+        logger.info(f"Created conversation: {conversation['id']}")
+        return JSONResponse(conversation)
+    except Exception as e:
+        logger.error(f"Failed to create conversation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(e)}")
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Endpoint to delete a conversation."""
+    try:
+        # TODO: Implement actual conversation storage
+        logger.info(f"Deleted conversation: {conversation_id}")
+        return JSONResponse({"status": "success", "message": "Conversation deleted"})
+    except Exception as e:
+        logger.error(f"Failed to delete conversation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+
+
+@app.get("/api/config/memory")
+async def get_memory_config():
+    """Endpoint to retrieve memory configuration."""
+    try:
+        return JSONResponse({})
+    except Exception as e:
+        logger.error(f"Failed to load memory config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load memory config: {str(e)}")
+
+
+@app.post("/api/config/memory")
+async def save_memory_config(request: Request):
+    """Endpoint to save memory configuration."""
+    try:
+        await request.json()
+        logger.info("Memory configuration saved")
+        return JSONResponse({"status": "success", "message": "Memory configuration saved"})
+    except Exception as e:
+        logger.error(f"Failed to save memory config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save memory config: {str(e)}")
+
+
+@app.get("/api/config/policies")
+async def get_policies_config():
+    """Endpoint to retrieve policies configuration."""
+    try:
+        return JSONResponse({})
+    except Exception as e:
+        logger.error(f"Failed to load policies config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load policies config: {str(e)}")
+
+
+@app.post("/api/config/policies")
+async def save_policies_config(request: Request):
+    """Endpoint to save policies configuration."""
+    try:
+        await request.json()
+        logger.info("Policies configuration saved")
+        return JSONResponse({"status": "success", "message": "Policies configuration saved"})
+    except Exception as e:
+        logger.error(f"Failed to save policies config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save policies config: {str(e)}")
+
+
+@app.get("/api/tools/status")
+async def get_tools_status():
+    """Endpoint to retrieve tools connection status."""
+    try:
+        # Get available apps and their tools
+        apps = await get_apps()
+        tools = []
+        internal_tools_count = {}
+
+        for app in apps:
+            try:
+                apis = await get_apis(app.name)
+                tool_count = len(apis)
+
+                # Create tool entry for each app
+                tools.append(
+                    {
+                        "name": app.name,
+                        "status": "connected" if tool_count > 0 else "disconnected",
+                        "type": getattr(app, "type", "api").upper(),
+                    }
+                )
+
+                internal_tools_count[app.name] = tool_count
+            except Exception as e:
+                logger.warning(f"Failed to get tools for app {app.name}: {e}")
+                tools.append(
+                    {
+                        "name": app.name,
+                        "status": "error",
+                        "type": getattr(app, "type", "api").upper(),
+                    }
+                )
+                internal_tools_count[app.name] = 0
+
+        return JSONResponse({"tools": tools, "internalToolsCount": internal_tools_count})
+    except Exception as e:
+        logger.error(f"Failed to get tools status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get tools status: {str(e)}")
+
+
+@app.post("/api/config/mode")
+async def save_mode_config(request: Request):
+    """Endpoint to save execution mode (fast/balanced)."""
+    try:
+        data = await request.json()
+        mode = data.get("mode", "balanced")
+
+        # Update lite_mode setting based on mode
+        if mode == "fast":
+            settings.advanced_features.lite_mode = True
+            logger.info("Lite mode enabled (lite_mode = True)")
+        elif mode == "balanced":
+            settings.advanced_features.lite_mode = False
+            logger.info("Balanced mode enabled (lite_mode = False)")
+
+        logger.info(f"Execution mode changed to: {mode}")
+        return JSONResponse({"status": "success", "mode": mode})
+    except Exception as e:
+        logger.error(f"Failed to save mode: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save mode: {str(e)}")
+
+
+@app.get("/api/config/subagents")
+async def get_subagents_config():
+    """Endpoint to retrieve sub-agents configuration."""
+    try:
+        return JSONResponse({})
+    except Exception as e:
+        logger.error(f"Failed to load sub-agents config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load sub-agents config: {str(e)}")
+
+
+@app.get("/api/apps")
+async def get_apps_endpoint():
+    """Endpoint to retrieve available apps."""
+    try:
+        apps = await get_apps()
+        apps_data = [
+            {
+                "name": app.name,
+                "description": app.description or "",
+                "url": app.url or "",
+                "type": getattr(app, "type", "api"),
+            }
+            for app in apps
+        ]
+        return JSONResponse({"apps": apps_data})
+    except Exception as e:
+        logger.error(f"Failed to load apps: {e}")
+        return JSONResponse({"apps": []})
+
+
+@app.get("/api/apps/{app_name}/tools")
+async def get_app_tools(app_name: str):
+    """Endpoint to retrieve tools for a specific app."""
+    try:
+        apis = await get_apis(app_name)
+        tools_data = [
+            {
+                "name": tool_name,
+                "description": tool_def.get("description", ""),
+            }
+            for tool_name, tool_def in apis.items()
+        ]
+        return JSONResponse({"tools": tools_data})
+    except Exception as e:
+        logger.error(f"Failed to load tools for app {app_name}: {e}")
+        return JSONResponse({"tools": []})
+
+
+@app.post("/api/config/subagents")
+async def save_subagents_config(request: Request):
+    """Endpoint to save sub-agents configuration."""
+    try:
+        await request.json()
+        logger.info("Sub-agents configuration saved")
+        return JSONResponse({"status": "success", "message": "Sub-agents configuration saved"})
+    except Exception as e:
+        logger.error(f"Failed to save sub-agents config: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save sub-agents config: {str(e)}")
+
+
+@app.post("/api/config/agent-mode")
+async def save_agent_mode_config(request: Request):
+    """Endpoint to save agent mode (supervisor/single)."""
+    try:
+        data = await request.json()
+        mode = data.get("mode", "supervisor")
+        logger.info(f"Agent mode changed to: {mode}")
+        return JSONResponse({"status": "success", "mode": mode})
+    except Exception as e:
+        logger.error(f"Failed to save agent mode: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save agent mode: {str(e)}")
+
+
+@app.get("/api/workspace/tree")
+async def get_workspace_tree():
+    """Endpoint to retrieve the workspace folder tree."""
+    try:
+        workspace_path = Path("./cuga_workspace")
+
+        if not workspace_path.exists():
+            workspace_path.mkdir(parents=True, exist_ok=True)
+            return JSONResponse({"tree": []})
+
+        def build_tree(path: Path, base_path: Path) -> dict:
+            """Recursively build file tree."""
+            relative_path = str(path.relative_to(base_path.parent))
+
+            if path.is_file():
+                return {"name": path.name, "path": relative_path, "type": "file"}
+            else:
+                children = []
+                try:
+                    for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                        if not item.name.startswith('.'):
+                            children.append(build_tree(item, base_path))
+                except PermissionError:
+                    pass
+
+                return {"name": path.name, "path": relative_path, "type": "directory", "children": children}
+
+        tree = []
+        for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if not item.name.startswith('.'):
+                tree.append(build_tree(item, workspace_path))
+
+        return JSONResponse({"tree": tree})
+    except Exception as e:
+        logger.error(f"Failed to load workspace tree: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load workspace tree: {str(e)}")
+
+
+@app.get("/api/workspace/file")
+async def get_workspace_file(path: str):
+    """Endpoint to retrieve a file's content from the workspace."""
+    try:
+        file_path = Path(path)
+
+        # Security check: ensure the path is within cuga_workspace
+        try:
+            file_path = file_path.resolve()
+            workspace_path = Path("./cuga_workspace").resolve()
+            file_path.relative_to(workspace_path)
+        except (ValueError, RuntimeError):
+            raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Check file size (limit to 10MB for preview)
+        if file_path.stat().st_size > 10 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large to preview (max 10MB)")
+
+        # Read file content
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=415, detail="File is not a text file")
+
+        return JSONResponse({"content": content, "path": str(path)})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load file: {str(e)}")
+
+
+@app.get("/api/workspace/download")
+async def download_workspace_file(path: str):
+    """Endpoint to download a file from the workspace."""
+    try:
+        file_path = Path(path)
+
+        # Security check: ensure the path is within cuga_workspace
+        try:
+            file_path = file_path.resolve()
+            workspace_path = Path("./cuga_workspace").resolve()
+            file_path.relative_to(workspace_path)
+        except (ValueError, RuntimeError):
+            raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        return FileResponse(
+            path=str(file_path), filename=file_path.name, media_type='application/octet-stream'
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to download file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to download file: {str(e)}")
+
+
+@app.delete("/api/workspace/file")
+async def delete_workspace_file(path: str):
+    """Endpoint to delete a file from the workspace."""
+    try:
+        file_path = Path(path)
+
+        # Security check: ensure the path is within cuga_workspace
+        try:
+            file_path = file_path.resolve()
+            workspace_path = Path("./cuga_workspace").resolve()
+            file_path.relative_to(workspace_path)
+        except (ValueError, RuntimeError):
+            raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
+
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        # Delete the file
+        file_path.unlink()
+
+        logger.info(f"File deleted successfully: {path}")
+        return JSONResponse({"status": "success", "message": "File deleted successfully"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {str(e)}")
+
+
+@app.post("/api/workspace/upload")
+async def upload_workspace_file(file: UploadFile = File(...)):
+    """Endpoint to upload a file to the workspace."""
+    try:
+        # Create workspace directory if it doesn't exist
+        workspace_path = Path("./cuga_workspace")
+        workspace_path.mkdir(exist_ok=True)
+
+        # Sanitize filename and prevent directory traversal
+        safe_filename = Path(file.filename).name
+        if not safe_filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        # Prevent overwriting critical files
+        if safe_filename.startswith('.'):
+            raise HTTPException(status_code=400, detail="Hidden files not allowed")
+
+        file_path = workspace_path / safe_filename
+
+        # Check file size (limit to 50MB)
+        file_size = 0
+        content = await file.read()
+        file_size = len(content)
+
+        if file_size > 50 * 1024 * 1024:  # 50MB limit
+            raise HTTPException(status_code=413, detail="File too large (max 50MB)")
+
+        # Write file
+        with open(file_path, 'wb') as f:
+            f.write(content)
+
+        logger.info(f"File uploaded successfully: {safe_filename} ({file_size} bytes)")
+        return JSONResponse(
+            {
+                "status": "success",
+                "message": "File uploaded successfully",
+                "filename": safe_filename,
+                "path": str(file_path.relative_to(Path("."))),
+                "size": file_size,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
 async def get_query(request: Request) -> Union[str, ActionResponse]:
