@@ -4,11 +4,22 @@ from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 class TestVariablesManager:
     """Test suite for VariablesManager functionality."""
 
-    def test_singleton_pattern(self):
-        """Test that VariablesManager follows singleton pattern."""
+    def test_independent_instances(self):
+        """Test that VariablesManager instances are independent (not singletons)."""
         vm1 = VariablesManager()
         vm2 = VariablesManager()
-        assert vm1 is vm2, "VariablesManager should be a singleton"
+        assert vm1 is not vm2, "VariablesManager should create independent instances"
+
+        # Verify they have separate state
+        vm1.add_variable("value1", name="var1")
+        vm2.add_variable("value2", name="var2")
+
+        assert vm1.get_variable_count() == 1
+        assert vm2.get_variable_count() == 1
+        assert vm1.get_variable("var1") == "value1"
+        assert vm2.get_variable("var2") == "value2"
+        assert vm1.get_variable("var2") is None  # vm1 doesn't have var2
+        assert vm2.get_variable("var1") is None  # vm2 doesn't have var1
 
     def test_add_variable_with_description(self):
         """Test adding variables with descriptions."""

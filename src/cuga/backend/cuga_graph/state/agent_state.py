@@ -69,19 +69,16 @@ class VariableMetadata:
 
 
 class VariablesManager(object):
-    _instance = None
-    variables: Dict[str, VariableMetadata] = {}
-    variable_counter: int = 0
-    _creation_order: list = []
-    _log_file: Optional[Path] = None
-    _session_start: Optional[datetime] = None
+    """Non-singleton variables manager for standalone use."""
 
-    def __new__(cls, *args, **kwargs):
-        if not cls._instance:
-            cls._instance = super(VariablesManager, cls).__new__(cls)
-            if settings.advanced_features.tracker_enabled:
-                cls._instance._initialize_logging()
-        return cls._instance
+    def __init__(self):
+        self.variables: Dict[str, VariableMetadata] = {}
+        self.variable_counter: int = 0
+        self._creation_order: list = []
+        self._log_file: Optional[Path] = None
+        self._session_start: Optional[datetime] = None
+        if settings.advanced_features.tracker_enabled:
+            self._initialize_logging()
 
     def _initialize_logging(self):
         """Initialize the markdown log file."""
@@ -740,6 +737,88 @@ class VariablesManager(object):
         return f"VariablesManager(variables={self.variables}, counter={self.variable_counter})"
 
 
+class StateVariablesManager(VariablesManager):
+    """Variables manager that stores data in AgentState for per-thread isolation via LangGraph."""
+
+    def __init__(self, state: 'AgentState'):
+        self.state = state
+        self._log_file = None
+        self._session_start = None
+
+    @property
+    def variables(self) -> Dict[str, VariableMetadata]:
+        """Get variables dict, reconstructing VariableMetadata objects from stored dicts."""
+        result = {}
+        for name, meta_dict in self.state.variables_storage.items():
+            result[name] = VariableMetadata(
+                value=meta_dict['value'],
+                description=meta_dict.get('description', ''),
+                created_at=datetime.fromisoformat(meta_dict['created_at'])
+                if isinstance(meta_dict.get('created_at'), str)
+                else meta_dict.get('created_at'),
+            )
+        return result
+
+    @variables.setter
+    def variables(self, value: Dict[str, VariableMetadata]):
+        """Set variables by converting to dicts and storing in state."""
+        self.state.variables_storage = {}
+        for name, metadata in value.items():
+            self.state.variables_storage[name] = {
+                'value': metadata.value,
+                'description': metadata.description,
+                'type': metadata.type,
+                'created_at': metadata.created_at.isoformat()
+                if isinstance(metadata.created_at, datetime)
+                else metadata.created_at,
+                'count_items': metadata.count_items,
+            }
+
+    @property
+    def variable_counter(self) -> int:
+        return self.state.variable_counter_state
+
+    @variable_counter.setter
+    def variable_counter(self, value: int):
+        self.state.variable_counter_state = value
+
+    @property
+    def _creation_order(self) -> list:
+        return self.state.variable_creation_order
+
+    @_creation_order.setter
+    def _creation_order(self, value: list):
+        self.state.variable_creation_order = value
+
+    def add_variable(self, value: Any, name: Optional[str] = None, description: Optional[str] = None) -> str:
+        """Add variable and store in state."""
+        if name is None:
+            self.variable_counter += 1
+            name = f"variable_{self.variable_counter}"
+        else:
+            if name.startswith("variable_") and name[9:].isdigit():
+                num = int(name[9:])
+                if num >= self.variable_counter:
+                    self.variable_counter = num
+
+        # Store as dict in state
+        metadata = VariableMetadata(value, description)
+        self.state.variables_storage[name] = {
+            'value': metadata.value,
+            'description': metadata.description,
+            'type': metadata.type,
+            'created_at': metadata.created_at.isoformat()
+            if isinstance(metadata.created_at, datetime)
+            else metadata.created_at,
+            'count_items': metadata.count_items,
+        }
+
+        if name not in self.state.variable_creation_order:
+            self.state.variable_creation_order.append(name)
+
+        return name
+
+
 class Prediction(BaseModel):
     action: str
     args: Optional[List[str]]
@@ -767,7 +846,11 @@ class AgentState(BaseModel):
     # pages: Annotated[Sequence[str], operator.add]  # List of pages traversed
     # page: Page  # The Playwright web page lets us interact with the web environment
     user_id: Optional[str] = "default"  # TODO: this should be updated in multi user scenario
+    thread_id: Optional[str] = None  # Thread ID for multi-user isolation
     current_datetime: Optional[str] = ""
+    variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    variable_counter_state: int = 0
+    variable_creation_order: List[str] = Field(default_factory=list)
     current_app: Optional[str] = None
     current_app_description: Optional[str] = None
     api_last_step: Optional[str] = None
@@ -829,9 +912,9 @@ class AgentState(BaseModel):
     tool_call: Optional[dict] = None
 
     @property
-    def variables_manager(self) -> VariablesManager:
-        """Get the singleton instance of VariablesManager for backward compatibility."""
-        return VariablesManager()
+    def variables_manager(self) -> 'StateVariablesManager':
+        """Get a state-specific variables manager that stores data in this AgentState."""
+        return StateVariablesManager(self)
 
     # def add_api_output_to_last_step(
     #     self,

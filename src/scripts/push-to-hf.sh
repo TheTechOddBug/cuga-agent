@@ -7,11 +7,21 @@ echo "Push to Hugging Face (Clean)"
 echo "=========================================="
 echo ""
 
+# Remember current branch before switching
+ORIGINAL_BRANCH=$(git branch --show-current)
+if [ -z "$ORIGINAL_BRANCH" ]; then
+  ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+fi
+echo "📍 Current branch: $ORIGINAL_BRANCH"
+
 # Create orphan branch with current state (no history)
 echo "🔄 Creating clean branch..."
 TEMP_BRANCH="hf-clean-$(date +%s)"
 
-git checkout --orphan $TEMP_BRANCH || exit 1
+git checkout --orphan $TEMP_BRANCH || {
+  echo "❌ Failed to create orphan branch"
+  exit 1
+}
 
 # Add HuggingFace Spaces header to README.md
 echo "📝 Adding HuggingFace Spaces header to README.md..."
@@ -50,7 +60,13 @@ git commit --no-verify -m "feat: docker-v1 with optimized frontend
 - Optimized webpack bundle from 16MB to 6.67MB
 - Added HF Space configuration
 - Production build with minification
-- All files under 10MB limit" || exit 1
+- All files under 10MB limit" || {
+  echo "❌ Failed to commit changes"
+  echo "🔄 Returning to original branch: $ORIGINAL_BRANCH"
+  git checkout $ORIGINAL_BRANCH
+  git branch -D $TEMP_BRANCH
+  exit 1
+}
 
 echo ""
 echo "🚀 Pushing to hf/main..."
@@ -59,12 +75,14 @@ git push hf $TEMP_BRANCH:main --force
 if [ $? -eq 0 ]; then
   echo ""
   echo "✅ Successfully pushed to Hugging Face!"
-  git checkout -
+  echo "🔄 Returning to original branch: $ORIGINAL_BRANCH"
+  git checkout $ORIGINAL_BRANCH
   git branch -D $TEMP_BRANCH
 else
   echo ""
   echo "❌ Push failed"
-  git checkout -
+  echo "🔄 Returning to original branch: $ORIGINAL_BRANCH"
+  git checkout $ORIGINAL_BRANCH
   git branch -D $TEMP_BRANCH
   exit 1
 fi

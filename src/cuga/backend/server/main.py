@@ -369,6 +369,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
         # Initialize new state
         local_state = default_state(page=None, observation=None, goal="")
         local_state.input = query
+        local_state.thread_id = thread_id
         local_tracker.intent = query
     else:
         # For resume, fetch state from LangGraph
@@ -378,6 +379,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
             ).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
+                local_state.thread_id = thread_id
 
     if not api_mode:
         local_obs, _, _, _, local_info = await app_state.env.step("")
@@ -1013,6 +1015,65 @@ async def save_mode_config(request: Request):
     except Exception as e:
         logger.error(f"Failed to save mode: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save mode: {str(e)}")
+
+
+@app.get("/api/agent/state")
+async def get_agent_state(request: Request):
+    """Endpoint to retrieve agent state for a specific thread."""
+    try:
+        thread_id = request.headers.get("X-Thread-ID")
+        if not thread_id:
+            thread_id = request.query_params.get("thread_id")
+
+        if not thread_id:
+            raise HTTPException(
+                status_code=400,
+                detail="thread_id is required (provide via X-Thread-ID header or thread_id query parameter)",
+            )
+
+        if not app_state.agent or not app_state.agent.graph:
+            raise HTTPException(status_code=503, detail="Agent graph not initialized")
+
+        try:
+            state_snapshot = app_state.agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+
+            if not state_snapshot or not state_snapshot.values:
+                return JSONResponse(
+                    {
+                        "thread_id": thread_id,
+                        "state": None,
+                        "variables": {},
+                        "variables_count": 0,
+                        "message": "No state found for this thread_id",
+                    }
+                )
+
+            local_state = AgentState(**state_snapshot.values)
+            variables_metadata = local_state.variables_manager.get_all_variables_metadata(
+                include_value=False, include_value_preview=True
+            )
+
+            return JSONResponse(
+                {
+                    "thread_id": thread_id,
+                    "state": {
+                        "input": local_state.input,
+                        "url": local_state.url,
+                        "current_app": local_state.current_app,
+                        "messages_count": len(local_state.messages) if local_state.messages else 0,
+                    },
+                    "variables": variables_metadata,
+                    "variables_count": len(variables_metadata),
+                }
+            )
+        except Exception as e:
+            logger.error(f"Failed to retrieve state for thread_id {thread_id}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve state: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get agent state: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get agent state: {str(e)}")
 
 
 @app.get("/api/config/subagents")
