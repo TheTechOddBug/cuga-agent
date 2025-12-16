@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -15,6 +16,8 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
     ActionResponse,
 )
 from cuga.config import settings
+
+# Note: Windows event loop policy is configured in conftest.py for better asyncio performance
 
 # Define server and registry commands
 DEMO_COMMAND = ["uv", "run", "demo"]  # Assuming demo runs on port 7860 as per settings.toml
@@ -42,6 +45,69 @@ os.environ["CUGA_TEST_ENV"] = "true"
 os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
 
 
+def get_preexec_fn():
+    """Returns a cross-platform preexec_fn for subprocess.Popen.
+    On Unix systems, returns os.setsid to create a new process group.
+    On Windows, returns None as setsid is not available.
+    """
+    if hasattr(os, "setsid"):
+        return os.setsid
+    return None
+
+
+def get_subprocess_env():
+    """Returns environment dict for subprocess with UTF-8 encoding on Windows.
+    This ensures that subprocesses can handle Unicode characters (like emojis)
+    that FastAPI's dev server prints.
+    """
+    env = os.environ.copy()
+    # On Windows, set UTF-8 encoding to handle Unicode characters in subprocess output
+    if platform.system().lower().startswith("win"):
+        env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+def get_sigkill():
+    """Returns SIGKILL signal value in a cross-platform way.
+    On Unix, returns signal.SIGKILL.
+    On Windows where SIGKILL doesn't exist, returns 9 (the numeric value).
+    """
+    return getattr(signal, "SIGKILL", 9)
+
+
+def kill_process_group(process, sig=None):
+    """Kills a process group in a cross-platform way.
+    On Unix, uses os.killpg to kill the process group.
+    On Windows, uses process.terminate() or process.kill() directly.
+
+    Args:
+        process: The subprocess.Popen process object
+        sig: Signal to send (signal.SIGTERM or signal.SIGKILL on Unix).
+             On Windows, None/TERM uses terminate(), KILL uses kill()
+    """
+    if process is None or process.poll() is not None:
+        return
+
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        if sig is None:
+            sig = signal.SIGTERM
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+    else:
+        is_kill = False
+        if sig is not None:
+            if hasattr(signal, "SIGKILL"):
+                is_kill = sig == signal.SIGKILL
+            else:
+                is_kill = sig == 9
+        if is_kill:
+            process.kill()
+        else:
+            process.terminate()
+
+
 class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
     """
     Base test class for FastAPI server's streaming endpoint.
@@ -55,6 +121,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
     def _kill_process_by_port(self, port: int, service_name: str = "service") -> bool:
         """
         Kill processes listening on a specific port.
+        Uses optimized methods per platform for better performance.
 
         Args:
             port: The port number to check
@@ -62,6 +129,71 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         Returns:
             True if any processes were killed, False otherwise
+        """
+        killed_any = False
+
+        if platform.system() == "Windows":
+            # On Windows, use netstat + taskkill which is much faster than iterating all processes
+            try:
+                result = subprocess.run(
+                    ["netstat", "-ano"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                for line in result.stdout.split('\n'):
+                    if f":{port}" in line and "LISTENING" in line:
+                        parts = line.split()
+                        if len(parts) > 4:
+                            pid = parts[-1]
+                            try:
+                                # Validate PID is numeric before using it
+                                int(pid)  # Validate it's a number
+                                print(f"Killing {service_name} process {pid} on port {port}")
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", pid],
+                                    capture_output=True,
+                                    timeout=5,
+                                    check=False,
+                                )
+                                killed_any = True
+                            except (ValueError, subprocess.TimeoutExpired):
+                                pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+                # Fallback to psutil if netstat fails
+                print(f"Warning: netstat failed, using fallback method: {e}")
+                killed_any = self._kill_process_by_port_psutil(port, service_name)
+        else:
+            # On Unix/Linux, use lsof which is fast
+            try:
+                result = subprocess.run(
+                    ["lsof", "-ti", f":{port}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if result.stdout.strip():
+                    pids = result.stdout.strip().split('\n')
+                    for pid in pids:
+                        if pid:
+                            try:
+                                print(f"Killing {service_name} process {pid} on port {port}")
+                                subprocess.run(["kill", "-9", pid], timeout=5, check=False)
+                                killed_any = True
+                            except (subprocess.TimeoutExpired, ValueError):
+                                pass
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # Fallback to psutil if lsof fails
+                killed_any = self._kill_process_by_port_psutil(port, service_name)
+
+        return killed_any
+
+    def _kill_process_by_port_psutil(self, port: int, service_name: str = "service") -> bool:
+        """
+        Fallback method using psutil (slower but more reliable).
+        Only used when platform-specific methods fail.
         """
         killed_any = False
         try:
@@ -91,28 +223,64 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                                     proc.wait()
                                 killed_any = True
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # Process might have already terminated or we don't have permission
                     continue
         except Exception as e:
             print(f"Error while trying to kill {service_name} processes on port {port}: {e}")
 
         return killed_any
 
-    async def wait_for_server(self, port: int, max_retries: int = 250, retry_interval: float = 0.5):
+    async def wait_for_server(
+        self,
+        port: int,
+        max_retries: int = None,
+        retry_interval: float = 0.5,
+        process: Optional[subprocess.Popen] = None,
+        log_file: Optional[str] = None,
+        process_name: str = "server",
+    ):
         """
         Wait for a server to be ready by pinging its health endpoint.
 
         Args:
             port: The port number the server is running on
-            max_retries: Maximum number of retry attempts (default: 120)
+            max_retries: Maximum number of retry attempts (default: 600 on Unix, 1200 on Windows)
             retry_interval: Time in seconds between retries (default: 0.5)
+            process: Optional subprocess.Popen object to check if process is still alive
+            log_file: Optional path to log file to read errors from if process dies
+            process_name: Name of the process for error messages (default: "server")
 
         Raises:
             TimeoutError: If the server doesn't become ready within max_retries attempts
+            RuntimeError: If the process has died before the server became ready
         """
+        # Use longer timeout on Windows due to slower package installation and process startup
+        if max_retries is None:
+            max_retries = 1200 if platform.system() == "Windows" else 600
+
         url = f"http://127.0.0.1:{port}/"
 
         for attempt in range(max_retries):
+            # Check if process has died (every 10 attempts to avoid too frequent checks)
+            if process is not None and attempt % 10 == 0 and attempt > 0:
+                if process.poll() is not None:
+                    error_msg = f"{process_name} process died with return code {process.returncode}"
+                    if log_file and os.path.exists(log_file):
+                        try:
+                            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+                                log_content = f.read()
+                                if log_content:
+                                    # Get last 50 lines of log
+                                    log_lines = log_content.split('\n')
+                                    last_lines = '\n'.join(log_lines[-50:])
+                                    error_msg += (
+                                        f"\n\nLast 50 lines of {process_name} log ({log_file}):\n{last_lines}"
+                                    )
+                                else:
+                                    error_msg += f"\n\nLog file {log_file} is empty."
+                        except Exception as e:
+                            error_msg += f"\n\nCould not read log file {log_file}: {e}"
+                    raise RuntimeError(error_msg)
+
             try:
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     response = await client.get(url)
@@ -123,10 +291,24 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_interval)
                 else:
-                    raise TimeoutError(
-                        f"Server did not become ready after {max_retries * retry_interval:.1f} seconds. "
+                    error_msg = (
+                        f"{process_name} did not become ready after {max_retries * retry_interval:.1f} seconds. "
                         f"Please check if the server started correctly on port {port}."
                     )
+                    # Check process status one last time
+                    if process is not None and process.poll() is not None:
+                        error_msg += f"\n{process_name} process died with return code {process.returncode}"
+                        if log_file and os.path.exists(log_file):
+                            try:
+                                with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
+                                    log_content = f.read()
+                                    if log_content:
+                                        log_lines = log_content.split('\n')
+                                        last_lines = '\n'.join(log_lines[-50:])
+                                        error_msg += f"\n\nLast 50 lines of {process_name} log ({log_file}):\n{last_lines}"
+                            except Exception as e:
+                                error_msg += f"\n\nCould not read log file {log_file}: {e}"
+                    raise TimeoutError(error_msg)
 
     def _create_log_files(self):
         """Create log files for demo and registry processes per test method in separate folders."""
@@ -159,7 +341,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                     log_path = os.path.join(self.test_log_dir, log_name)
                     if os.path.exists(log_path):
                         try:
-                            with open(log_path, 'w') as f:
+                            with open(log_path, 'w', encoding='utf-8') as f:
                                 f.write('')  # Truncate the file
                             print(f"Cleared log file: {log_path}")
                         except (OSError, PermissionError) as log_error:
@@ -183,7 +365,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             log_files.append(self.memory_log_file)
         for log_file in log_files:
             try:
-                with open(log_file, 'w') as f:
+                with open(log_file, 'w', encoding='utf-8') as f:
                     f.write('')  # Clear the file
                 print(f"Cleared log file: {log_file}")
             except (OSError, PermissionError) as e:
@@ -236,22 +418,24 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 os.environ[key] = value
                 print(f"  Set {key} = {value}")
 
-        # Open log files for writing
-        self.registry_log_handle = open(self.registry_log_file, 'w', buffering=1)  # Line buffered
-        self.demo_log_handle = open(self.demo_log_file, 'w', buffering=1)  # Line buffered
+        # Open log files for writing with UTF-8 encoding
+        self.registry_log_handle = open(
+            self.registry_log_file, 'w', encoding='utf-8', buffering=1
+        )  # Line buffered
+        self.demo_log_handle = open(self.demo_log_file, 'w', encoding='utf-8', buffering=1)  # Line buffered
         self.digital_sales_mcp_log_handle = open(
-            self.digital_sales_mcp_log_file, 'w', buffering=1
+            self.digital_sales_mcp_log_file, 'w', encoding='utf-8', buffering=1
         )  # Line buffered
         if self.enable_memory_service and self.memory_log_file:
-            self.memory_log_handle = open(self.memory_log_file, 'w', buffering=1)
+            self.memory_log_handle = open(self.memory_log_file, 'w', encoding='utf-8', buffering=1)
         print("Starting digital sales MCP process...")
         self.digital_sales_mcp_process = subprocess.Popen(
             DIGITAL_SALES_MCP_COMMAND,
             stdout=self.digital_sales_mcp_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print("Starting registry process...")
         self.registry_process = subprocess.Popen(
@@ -259,8 +443,8 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stdout=self.registry_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Registry process started with PID: {self.registry_process.pid}")
 
@@ -271,12 +455,18 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 stdout=self.memory_log_handle,
                 stderr=subprocess.STDOUT,  # Redirect stderr to stdout
                 text=True,
-                env=os.environ.copy(),
+                env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
                 preexec_fn=os.setsid,
             )
             print(f"Memory service process started with PID: {self.memory_process.pid}")
             # Ensure memory API is ready before services like the tracker try to use it
-            await self.wait_for_server(settings.server_ports.memory, max_retries=240)
+            await self.wait_for_server(
+                settings.server_ports.memory,
+                max_retries=240,
+                process=self.memory_process,
+                log_file=self.memory_log_file,
+                process_name="Memory service",
+            )
 
         print("Starting demo server process...")
         self.demo_process = subprocess.Popen(
@@ -284,17 +474,32 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stdout=self.demo_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Demo server process started with PID: {self.demo_process.pid}")
 
         # Give processes some time to start up
         print("Waiting for servers to initialize...")
-        await self.wait_for_server(settings.server_ports.registry)
+        await self.wait_for_server(
+            settings.server_ports.registry,
+            process=self.registry_process,
+            log_file=self.registry_log_file,
+            process_name="Registry server",
+        )
         if self.enable_memory_service:
-            await self.wait_for_server(settings.server_ports.memory)
-        await self.wait_for_server(settings.server_ports.demo)
+            await self.wait_for_server(
+                settings.server_ports.memory,
+                process=self.memory_process,
+                log_file=self.memory_log_file,
+                process_name="Memory service",
+            )
+        await self.wait_for_server(
+            settings.server_ports.demo,
+            process=self.demo_process,
+            log_file=self.demo_log_file,
+            process_name="Demo server",
+        )
         print("Server initialization wait complete.")
         print("--- Test environment setup complete ---")
 
@@ -311,7 +516,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.demo_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.demo_process.pid), signal.SIGTERM)
+                    kill_process_group(self.demo_process, signal.SIGTERM)
                     self.demo_process.wait(timeout=5)
                     print("Demo server process terminated gracefully.")
                 else:
@@ -320,7 +525,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Demo server process did not terminate gracefully or was already gone.")
                 try:
                     if self.demo_process.poll() is None:
-                        os.killpg(os.getpgid(self.demo_process.pid), signal.SIGKILL)
+                        kill_process_group(self.demo_process, get_sigkill())
                         self.demo_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -330,7 +535,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.registry_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.registry_process.pid), signal.SIGTERM)
+                    kill_process_group(self.registry_process, signal.SIGTERM)
                     self.registry_process.wait(timeout=5)
                     print("Registry process terminated gracefully.")
                 else:
@@ -339,7 +544,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Registry process did not terminate gracefully or was already gone.")
                 try:
                     if self.registry_process.poll() is None:
-                        os.killpg(os.getpgid(self.registry_process.pid), signal.SIGKILL)
+                        kill_process_group(self.registry_process, get_sigkill())
                         self.registry_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -349,7 +554,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.digital_sales_mcp_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.digital_sales_mcp_process.pid), signal.SIGTERM)
+                    kill_process_group(self.digital_sales_mcp_process, signal.SIGTERM)
                     self.digital_sales_mcp_process.wait(timeout=5)
                     print("Digital sales MCP process terminated gracefully.")
                 else:
@@ -358,7 +563,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Digital sales MCP process did not terminate gracefully or was already gone.")
                 try:
                     if self.digital_sales_mcp_process.poll() is None:
-                        os.killpg(os.getpgid(self.digital_sales_mcp_process.pid), signal.SIGKILL)
+                        kill_process_group(self.digital_sales_mcp_process, get_sigkill())
                         self.digital_sales_mcp_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -367,7 +572,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
         if self.memory_process:
             try:
                 if self.memory_process.poll() is None:
-                    os.killpg(os.getpgid(self.memory_process.pid), signal.SIGTERM)
+                    kill_process_group(self.memory_process, signal.SIGTERM)
                     self.memory_process.wait(timeout=5)
                     print("Memory service process terminated gracefully.")
                 else:
@@ -376,7 +581,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Memory service did not terminate gracefully or was already gone.")
                 try:
                     if self.memory_process.poll() is None:
-                        os.killpg(os.getpgid(self.memory_process.pid), signal.SIGKILL)
+                        kill_process_group(self.memory_process, get_sigkill())
                         self.memory_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone

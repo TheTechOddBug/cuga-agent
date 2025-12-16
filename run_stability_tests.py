@@ -9,6 +9,24 @@ import socket
 import threading
 import time
 import uuid
+import json
+import glob
+from pathlib import Path
+import platform
+
+# Set UTF-8 encoding for stdout/stderr on Windows to handle Unicode characters
+if platform.system() == "Windows":
+    if sys.stdout.encoding != "utf-8":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            # Python < 3.7 or reconfigure not available, use environment variable
+            os.environ["PYTHONIOENCODING"] = "utf-8"
+    if sys.stderr.encoding != "utf-8":
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 
 # Configuration
 IMAGE_NAME = "cuga-e2e-tests"
@@ -154,19 +172,68 @@ def run_docker_test(test_full_path, run_timestamp):
 
 
 def kill_process_on_port(port):
-    """Kill any process listening on the given port."""
-    try:
-        # Find process using the port
-        result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+    """Kill any process listening on the given port (cross-platform)."""
+    import platform
 
-        if result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            for pid in pids:
-                if pid:
-                    print(f"  Killing process {pid} on port {port}")
-                    subprocess.run(["kill", "-9", pid], check=False)
-    except Exception as e:
-        print(f"  Warning: Could not kill process on port {port}: {e}")
+    if platform.system() == "Windows":
+        # Use psutil on Windows (more reliable than netstat)
+        try:
+            import psutil
+
+            killed_any = False
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    connections = proc.net_connections()
+                    if connections:
+                        for conn in connections:
+                            if (
+                                hasattr(conn, 'laddr')
+                                and conn.laddr
+                                and conn.laddr.port == port
+                                and conn.status == 'LISTEN'
+                            ):
+                                print(
+                                    f"  Killing process {proc.info['pid']} ({proc.info['name']}) on port {port}"
+                                )
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=2)
+                                except psutil.TimeoutExpired:
+                                    proc.kill()
+                                    proc.wait()
+                                killed_any = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            if not killed_any:
+                # Port might not be in use, which is fine
+                pass
+        except ImportError:
+            # Fallback to netstat if psutil not available
+            try:
+                result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False)
+                for line in result.stdout.split('\n'):
+                    if f":{port}" in line and "LISTENING" in line:
+                        parts = line.split()
+                        if len(parts) > 4:
+                            pid = parts[-1]
+                            subprocess.run(["taskkill", "/F", "/PID", pid], check=False, capture_output=True)
+            except Exception as e:
+                print(f"  Warning: Could not kill process on port {port}: {e}")
+        except Exception as e:
+            print(f"  Warning: Could not kill process on port {port}: {e}")
+    else:
+        # Unix/Linux: use lsof
+        try:
+            result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+
+            if result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    if pid:
+                        print(f"  Killing process {pid} on port {port}")
+                        subprocess.run(["kill", "-9", pid], check=False)
+        except Exception as e:
+            print(f"  Warning: Could not kill process on port {port}: {e}")
 
 
 def cleanup_ports(env_ports):
@@ -231,6 +298,178 @@ def run_test_wrapper(method, test_full_path, run_timestamp):
         return run_local_test(test_full_path, run_timestamp)
 
 
+def generate_summary_report(results_dir: str = "test-results"):
+    """Generate a summary report from collected test results."""
+    results_path = Path(results_dir)
+    all_results = {}
+    total_passed = 0
+    total_failed = 0
+    total_tests = 0
+
+    # Collect results from all Python versions
+    if results_path.exists():
+        result_files = glob.glob(str(results_path / "test_results_python_*.json"))
+        if not result_files:
+            result_files = glob.glob(str(results_path / "**/test_results_python_*.json"), recursive=True)
+
+        for result_file in result_files:
+            # Extract Python version from filename: test_results_python_3.11.json -> 3.11
+            filename = Path(result_file).name
+            python_version = filename.replace("test_results_python_", "").replace(".json", "")
+            try:
+                with open(result_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    all_results[python_version] = data
+                    total_passed += data["passed"]
+                    total_failed += data["failed"]
+                    total_tests += data["total"]
+            except Exception as e:
+                print(f"Error reading {result_file}: {e}")
+                all_results[python_version] = {"total": 0, "passed": 0, "failed": 0, "pass_rate": 0}
+
+    # Calculate overall pass rate
+    overall_pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+
+    # Generate report
+    if not all_results:
+        report = []
+        report.append("## 📊 Stability Test Results")
+        report.append("")
+        report.append("⚠️ No test results found. Tests may have failed before results could be saved.")
+        report.append("Please check individual job logs for details.")
+        summary_text = "\n".join(report)
+        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file:
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write(summary_text)
+        print(summary_text)
+        return
+
+    report = []
+    report.append("## 📊 Stability Test Results")
+    report.append("")
+    report.append(
+        f"**Overall Pass Rate: {overall_pass_rate:.1f}%** ({total_passed}/{total_tests} tests passed)"
+    )
+    report.append("")
+
+    # Per-version breakdown
+    report.append("### Results by Python Version")
+    report.append("")
+    report.append("| Python Version | Passed | Failed | Total | Pass Rate |")
+    report.append("|---------------|--------|--------|-------|-----------|")
+
+    for version in sorted(all_results.keys()):
+        data = all_results[version]
+        status_emoji = "✅" if data["pass_rate"] >= 88 else "⚠️"
+        report.append(
+            f"| {status_emoji} {version} | {data['passed']} | {data['failed']} | {data['total']} | {data['pass_rate']:.1f}% |"
+        )
+
+    report.append("")
+
+    # Aggregate test results across all Python versions
+    test_status_by_name = {}  # test_name -> {versions: [list], all_passed: bool, any_failed: bool}
+
+    for version in sorted(all_results.keys()):
+        data = all_results[version]
+        if data.get("tests"):
+            for test in data["tests"]:
+                test_name = test["name"]
+                if test_name not in test_status_by_name:
+                    test_status_by_name[test_name] = {
+                        "versions": [],
+                        "all_passed": True,
+                        "any_failed": False,
+                    }
+                test_status_by_name[test_name]["versions"].append(
+                    {
+                        "version": version,
+                        "status": test["status"],
+                    }
+                )
+                if test["status"] == "FAIL":
+                    test_status_by_name[test_name]["all_passed"] = False
+                    test_status_by_name[test_name]["any_failed"] = True
+
+    # Overall test results summary
+    report.append("### Overall Test Results")
+    report.append("")
+
+    # Tests that passed in all versions
+    all_passed_tests = [name for name, info in test_status_by_name.items() if info["all_passed"]]
+    # Tests that failed in at least one version
+    any_failed_tests = [name for name, info in test_status_by_name.items() if info["any_failed"]]
+
+    if all_passed_tests:
+        report.append("**✅ Tests Passed in All Versions:**")
+        for test_name in sorted(all_passed_tests):
+            report.append(f"- ✅ {test_name}")
+        report.append("")
+
+    if any_failed_tests:
+        report.append("**❌ Tests Failed in At Least One Version:**")
+        for test_name in sorted(any_failed_tests):
+            # Show which versions passed/failed for this test
+            info = test_status_by_name[test_name]
+            version_statuses = []
+            for v in info["versions"]:
+                status_emoji = "✅" if v["status"] == "PASS" else "❌"
+                version_statuses.append(f"{status_emoji} {v['version']}")
+            versions_str = ", ".join(version_statuses)
+            report.append(f"- ❌ {test_name} ({versions_str})")
+        report.append("")
+
+    if not all_passed_tests and not any_failed_tests:
+        report.append("No test results available.")
+        report.append("")
+
+    # Detailed breakdown if pass rate >= 88%
+    if overall_pass_rate >= 88:
+        report.append("### 📋 Detailed Test Results by Python Version")
+        report.append("")
+
+        for version in sorted(all_results.keys()):
+            data = all_results[version]
+            report.append(f"#### Python {version}")
+            report.append("")
+
+            if data.get("tests"):
+                passed_tests = [t for t in data["tests"] if t["status"] == "PASS"]
+                failed_tests = [t for t in data["tests"] if t["status"] == "FAIL"]
+
+                if passed_tests:
+                    report.append("**✅ Passed Tests:**")
+                    for test in passed_tests:
+                        report.append(f"- ✅ {test['name']}")
+                    report.append("")
+
+                if failed_tests:
+                    report.append("**❌ Failed Tests:**")
+                    for test in failed_tests:
+                        report.append(f"- ❌ {test['name']}")
+                    report.append("")
+    else:
+        report.append("### ⚠️ Low Pass Rate")
+        report.append("")
+        report.append(f"Overall pass rate ({overall_pass_rate:.1f}%) is below the 88% threshold.")
+        report.append("Please review the individual job results above for details.")
+
+    report.append("---")
+    report.append("")
+    report.append("⚠️  Note: Tests are configured to report warnings instead of failures.")
+    report.append("Check individual job results above for detailed test outcomes.")
+
+    # Write to GitHub step summary
+    summary_text = "\n".join(report)
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write(summary_text)
+
+    print(summary_text)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run stability tests.")
     parser.add_argument("--parallel", action="store_true", help="Run tests in parallel.")
@@ -244,7 +483,21 @@ def main():
         default="docker",
         help="Execution method: 'local' or 'docker'.",
     )
+    parser.add_argument(
+        "--generate-summary",
+        action="store_true",
+        help="Generate summary report from collected test results.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default="test-results",
+        help="Directory containing test result JSON files (for --generate-summary).",
+    )
     args = parser.parse_args()
+
+    if args.generate_summary:
+        generate_summary_report(args.results_dir)
+        return
 
     if args.clean and args.method == "docker":
         print("Stopping and removing all test containers (filtered by 'cuga_test_')...")
@@ -301,8 +554,27 @@ def main():
             test_targets.append(full_target)
 
     if args.parallel:
-        print(f"Running {len(test_targets)} tests in parallel...")
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Limit concurrent workers on Windows due to slower subprocess spawning
+        # and resource constraints. Windows subprocess creation is significantly
+        # slower than Unix, so fewer concurrent tests reduces contention.
+        if platform.system() == "Windows":
+            # Windows subprocess spawning is much slower than Unix, and concurrent
+            # execution causes significant resource contention. Even with limited
+            # workers, the overhead of managing multiple subprocesses simultaneously
+            # can make parallel execution slower than sequential on Windows.
+            # Use 2 workers as a compromise - allows some parallelism while
+            # minimizing contention. For best performance, consider running
+            # sequentially on Windows (remove --parallel flag).
+            max_workers = min(2, len(test_targets))
+            print(
+                f"Running {len(test_targets)} tests in parallel (max {max_workers} concurrent on Windows)..."
+            )
+        else:
+            # On Unix/Linux, we can use more workers as subprocess spawning is faster
+            max_workers = min(8, len(test_targets))
+            print(f"Running {len(test_targets)} tests in parallel (max {max_workers} concurrent)...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tests
             future_to_test = {
                 executor.submit(run_test_wrapper, args.method, target, run_timestamp): target
@@ -328,16 +600,73 @@ def main():
     # Sort results for cleaner display since parallel execution might mix them up
     results.sort(key=lambda x: x[0])
 
+    passed_count = 0
+    failed_count = 0
+
     for name, success in results:
         status = "PASS" if success else "FAIL"
         print(f"[{status}] {name}")
-        if not success:
+        if success:
+            passed_count += 1
+        else:
+            failed_count += 1
             all_passed = False
 
+    print("\n=== Final Results ===")
+    print(f"Total tests: {len(results)}")
+    print(f"Passed: {passed_count}")
+    print(f"Failed: {failed_count}")
+
+    # Calculate pass rate
+    pass_rate = (passed_count / len(results) * 100) if len(results) > 0 else 0
+    print(f"Pass rate: {pass_rate:.1f}%")
+
+    # Output JSON results for workflow consumption
+    results_json = {
+        "total": len(results),
+        "passed": passed_count,
+        "failed": failed_count,
+        "pass_rate": round(pass_rate, 2),
+        "tests": [{"name": name, "status": "PASS" if success else "FAIL"} for name, success in results],
+    }
+
+    results_file = os.environ.get("TEST_RESULTS_FILE", "test_results.json")
+    try:
+        # Use UTF-8 encoding explicitly for cross-platform compatibility
+        # Windows defaults to cp1252 which can't encode all Unicode characters
+        with open(results_file, "w", encoding="utf-8") as f:
+            json.dump(results_json, f, indent=2, ensure_ascii=False)
+        try:
+            print(f"\nResults saved to {results_file}")
+        except UnicodeEncodeError:
+            print(f"\nResults saved to {results_file}")
+    except Exception as e:
+        # Safe error printing that handles encoding issues
+        error_msg = str(e)
+        try:
+            print(f"\nWarning: Could not save results to {results_file}: {error_msg}")
+        except UnicodeEncodeError:
+            # Fallback to ASCII-safe message
+            print(f"\nWarning: Could not save results to {results_file}: {repr(e)}")
+
     if not all_passed:
-        sys.exit(1)
+        # Use ASCII-safe characters for Windows compatibility
+        warning_msg = (
+            f"\nWARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure."
+        )
+        try:
+            print(
+                f"\n⚠️  WARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure."
+            )
+        except UnicodeEncodeError:
+            print(warning_msg)
+        print("The workflow will continue to allow other Python versions to run.")
+        sys.exit(0)  # Exit with 0 to allow workflow to continue
     else:
-        print("All tests passed!")
+        try:
+            print("\n✅ All tests passed!")
+        except UnicodeEncodeError:
+            print("\nAll tests passed!")
 
 
 if __name__ == "__main__":

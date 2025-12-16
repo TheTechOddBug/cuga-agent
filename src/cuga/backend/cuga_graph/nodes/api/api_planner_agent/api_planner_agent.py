@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -17,9 +17,56 @@ from cuga.backend.llm.utils.helpers import load_prompt_simple
 from cuga.config import settings
 from cuga.configurations.instructions_manager import InstructionsManager
 
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    ChatOpenAI = None
+
+try:
+    from langchain_groq import ChatGroq
+except ImportError:
+    ChatGroq = None
+
+try:
+    from langchain_ibm import ChatWatsonx
+except ImportError:
+    ChatWatsonx = None
+
 instructions_manager = InstructionsManager()
 tracker = ActivityTracker()
 llm_manager = LLMManager()
+
+
+def _get_model_identifier(llm: BaseChatModel) -> Optional[str]:
+    """
+    Safely extract model identifier from different LLM classes.
+
+    Supports:
+    - ChatWatsonx: uses model_id attribute
+    - ChatOpenAI: uses model_name attribute
+    - ChatGroq: uses model attribute
+    - Other BaseChatModel subclasses: tries model_id, model_name, model in that order
+
+    Args:
+        llm: The language model instance
+
+    Returns:
+        Model identifier string or None if not found
+    """
+    if ChatWatsonx is not None and isinstance(llm, ChatWatsonx):
+        return getattr(llm, 'model_id', None)
+    elif ChatOpenAI is not None and isinstance(llm, ChatOpenAI):
+        return getattr(llm, 'model_name', None)
+    elif ChatGroq is not None and isinstance(llm, ChatGroq):
+        return getattr(llm, 'model', None)
+    else:
+        # Try common attribute names in order of preference
+        for attr in ['model_id', 'model_name', 'model']:
+            if hasattr(llm, attr):
+                value = getattr(llm, attr)
+                if value:
+                    return str(value)
+    return None
 
 
 class APIPlannerAgent(BaseAgent):
@@ -27,10 +74,13 @@ class APIPlannerAgent(BaseAgent):
         super().__init__()
         self.name = "APIPlannerAgent"
 
+        model_id = _get_model_identifier(llm)
+        self.thoughts_enabled = not (model_id and "oss" in model_id) and settings.features.thoughts
+
         if settings.advanced_features.api_planner_hitl:
-            schema = APIPlannerOutputLite if not settings.features.thoughts else APIPlannerOutput
+            schema = APIPlannerOutputLite if not self.thoughts_enabled else APIPlannerOutput
         else:
-            schema = APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputNoHITL
+            schema = APIPlannerOutputLiteNoHITL if not self.thoughts_enabled else APIPlannerOutputNoHITL
 
         self.chain = BaseAgent.get_chain(prompt_template=prompt_template, llm=llm, schema=schema)
 
@@ -44,7 +94,7 @@ class APIPlannerAgent(BaseAgent):
         data["instructions"] = instructions_manager.get_instructions(self.name)
         res = await self.chain.ainvoke(data)
 
-        if not settings.features.thoughts:
+        if not self.thoughts_enabled:
             lite_res = res
             if settings.advanced_features.api_planner_hitl:
                 full_res = APIPlannerOutput(

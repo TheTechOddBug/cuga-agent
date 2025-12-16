@@ -1,8 +1,15 @@
 import asyncio
 import os
+import signal
 import subprocess
 
-from system_tests.e2e.base_test import BaseTestServerStream
+from system_tests.e2e.base_test import (
+    BaseTestServerStream,
+    get_preexec_fn,
+    get_subprocess_env,
+    kill_process_group,
+    get_sigkill,
+)
 from cuga.config import settings
 
 
@@ -52,8 +59,8 @@ class BaseCRMTestServerStream(BaseTestServerStream):
                 os.environ[key] = value
                 print(f"  Set {key} = {value}")
 
-        # Open log file for writing
-        self.demo_log_handle = open(self.demo_log_file, 'w', buffering=1)
+        # Open log file for writing with UTF-8 encoding
+        self.demo_log_handle = open(self.demo_log_file, 'w', encoding='utf-8', buffering=1)
 
         # Start demo_crm which includes all necessary services
         demo_crm_command = ["uv", "run", "cuga", "start", "demo_crm"]
@@ -64,14 +71,19 @@ class BaseCRMTestServerStream(BaseTestServerStream):
             stdout=self.demo_log_handle,
             stderr=subprocess.STDOUT,
             text=True,
-            env=os.environ.copy(),
-            preexec_fn=os.setsid,
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
+            preexec_fn=get_preexec_fn(),
         )
         print(f"Demo CRM process started with PID: {self.demo_process.pid}")
 
         # Wait for servers to initialize
         print("Waiting for servers to initialize...")
-        await self.wait_for_server(settings.server_ports.demo)
+        await self.wait_for_server(
+            settings.server_ports.demo,
+            process=self.demo_process,
+            log_file=self.demo_log_file,
+            process_name="Demo CRM server",
+        )
         print("Server initialization wait complete.")
         print("--- CRM test environment setup complete ---")
 
@@ -85,7 +97,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
         if self.demo_process:
             try:
                 if self.demo_process.poll() is None:
-                    os.killpg(os.getpgid(self.demo_process.pid), 15)
+                    kill_process_group(self.demo_process, signal.SIGTERM)
                     self.demo_process.wait(timeout=5)
                     print("Demo CRM process terminated gracefully.")
                 else:
@@ -94,7 +106,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
                 print("Demo CRM process did not terminate gracefully or was already gone.")
                 try:
                     if self.demo_process.poll() is None:
-                        os.killpg(os.getpgid(self.demo_process.pid), 9)
+                        kill_process_group(self.demo_process, get_sigkill())
                         self.demo_process.wait()
                 except (ProcessLookupError, OSError):
                     pass
