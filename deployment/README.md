@@ -246,3 +246,86 @@ kubectl describe pod -l app.kubernetes.io/name=cuga
 | OPENAI_BASE_URL | Optional. Custom OpenAI-compatible API base URL |
 | MODEL_NAME | Model name (e.g. gpt-4o, llama-3.1-70b-versatile) |
 | AGENT_SETTING_CONFIG | Config file (settings.groq.toml, settings.openai.toml) |
+
+---
+
+## ☁️ OpenShift Deployment
+
+Deploy CUGA to an OpenShift cluster using the provided Helm chart and deployment script. Each deployment is scoped to an `INSTANCE_ID`, so multiple independent agent instances can coexist in the same namespace.
+
+### Prerequisites
+
+- `oc` or `kubectl` CLI, logged in to your cluster (`oc login ...`)
+- `helm` 3 installed
+- IBM Container Registry API key (for pulling `us.icr.io/nocodeui-automation/cuga`)
+
+### Quick Start
+
+```bash
+# 1. Copy the env template and fill in your values
+cp deployment/helm/openshift.example.env deployment/helm/my-instance.env
+# Edit my-instance.env — set INSTANCE_ID, ICR_API_KEY, GROQ_API_KEY, etc.
+
+# 2. Run the deploy script
+./deployment/helm/deploy-openshift.sh deployment/helm/my-instance.env
+```
+
+The script will:
+1. Create the namespace (idempotent)
+2. Create an image pull secret for `us.icr.io` using your `ICR_API_KEY`
+3. Create a Kubernetes secret with all sensitive env vars
+4. Deploy the Helm chart (`cuga-$INSTANCE_ID`) with the correct image and config
+5. Create an OpenShift Route with edge TLS (HTTPS) and print the access URLs
+
+### Access URLs
+
+After deploy, the agent is available at:
+
+```
+https://<route-host>/        # Agent chat UI
+https://<route-host>/chat    # Chat (client-side route)
+https://<route-host>/manage  # Management dashboard
+```
+
+HTTP is automatically redirected to HTTPS.
+
+### Multi-instance example
+
+```bash
+# Deploy two independent instances into the same namespace
+./deployment/helm/deploy-openshift.sh deployment/helm/acme.env    # release: cuga-acme
+./deployment/helm/deploy-openshift.sh deployment/helm/ibm.env     # release: cuga-ibm
+```
+
+Each instance has its own secrets, PVC, and Route — re-running a script is safe and will perform a rolling upgrade.
+
+### Cleanup
+
+```bash
+# Remove a specific instance (keeps namespace intact)
+./deployment/helm/cleanup-openshift.sh deployment/helm/my-instance.env
+
+# Remove instance and delete the entire namespace
+./deployment/helm/cleanup-openshift.sh deployment/helm/my-instance.env --delete-namespace
+```
+
+### Configuration reference (`openshift.example.env`)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `INSTANCE_ID` | yes | Unique name for this instance (e.g. `acme`). Names the Helm release `cuga-$INSTANCE_ID` |
+| `NAMESPACE` | yes | Kubernetes namespace (default: `cuga`) |
+| `ICR_API_KEY` | yes | IBM Container Registry API key for image pull secret |
+| `IMAGE_REPOSITORY` | yes | Image repo (default: `us.icr.io/nocodeui-automation/cuga`) |
+| `IMAGE_TAG` | yes | Image tag (default: `latest`) |
+| `ROUTE_HOSTNAME` | no | Custom hostname — leave empty for OpenShift auto-assign |
+| `GROQ_API_KEY` | yes | Groq API key |
+| `MODEL_NAME` | yes | LLM model name |
+| `AGENT_SETTING_CONFIG` | yes | Settings TOML file (e.g. `settings.groq.toml`) |
+| `DYNACONF_AUTH__ENABLED` | no | Enable OIDC auth (default: `true`) |
+| `OIDC_CLIENT_ID` | no | OIDC client ID |
+| `OIDC_CLIENT_SECRET` | no | OIDC client secret |
+| `OIDC_DISCOVERY_URL` | no | OIDC discovery URL |
+| `OIDC_REDIRECT_URI` | no | OIDC redirect URI (e.g. `https://<route-host>/manage`) |
+| `DYNACONF_STORAGE__MODE` | no | Storage mode: `local` (default) or `prod` |
+| `DYNACONF_STORAGE__POSTGRES_URL` | no | PostgreSQL URL (only for `prod` mode) |
